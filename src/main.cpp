@@ -1,6 +1,7 @@
 #include "storage/Database.hpp"
 #include "command/CommandDispatcher.hpp"
 #include "command/BasicCommands.hpp"
+#include "command/ListCommands.hpp"
 #include "server/TCPServer.hpp"
 
 #include <iostream>
@@ -12,6 +13,7 @@ int main(){
 
     Dispatcher dispatcher;
     registerBasicCommands(dispatcher);
+    registerListCommands(dispatcher);
 
     try {
         TCPServer server(6379, &ctx, &dispatcher);

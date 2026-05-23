@@ -38,6 +38,7 @@ target_compile_options(protocol PRIVATE ${WARNING_FLAGS})
 
 add_library(storage
     src/storage/StringStore.cpp
+    src/storage/ListStore.cpp
 )
 target_include_directories(storage PUBLIC include)
 target_compile_options(storage PRIVATE ${WARNING_FLAGS})
@@ -45,6 +46,7 @@ target_compile_options(storage PRIVATE ${WARNING_FLAGS})
 add_library(command
     src/command/CommandDispatcher.cpp
     src/command/BasicCommands.cpp
+    src/command/ListCommands.cpp
 )
 target_include_directories(command PUBLIC include)
 target_link_libraries(command PUBLIC protocol storage)

@@ -109,3 +109,22 @@ ListStore::blpop(const std::vector<std::string>& keys, int timeout){
     return std::nullopt;
 }
 
+bool ListStore::del(const std::string& key) {
+    std::lock_guard<std::mutex> lock(mutex);
+    return lists.erase(key) > 0;
+}
+
+bool ListStore::exists(const std::string& key) {
+    std::lock_guard<std::mutex> lock(mutex);
+    auto it = lists.find(key);
+    return it != lists.end() && !it->second.empty();
+}
+
+std::vector<std::string> ListStore::keys() {
+    std::lock_guard<std::mutex> lock(mutex);
+    std::vector<std::string> res;
+    for (const auto& [k, v] : lists) {
+        if (!v.empty()) res.push_back(k);
+    }
+    return res;
+}

@@ -2,7 +2,7 @@
 
 A from-scratch Redis-compatible in-memory data store, written in modern C++.
 
-> **Status:** Core protocol + basic string commands working over TCP.
+> **Status:** Core protocol, string/key commands, and list commands working over TCP.
 > Multi-threaded server, one thread per client.
 
 ---
@@ -16,11 +16,17 @@ make
 ./redis_server
 ```
 
-The server listens on **port 6379**:
+The server listens on **port 6379** by default:
 
 ```bash
 printf '*1\r\n$4\r\nPING\r\n' | nc -q 1 127.0.0.1 6379
 # +PONG
+```
+
+Custom port and config metadata:
+
+```bash
+./redis_server --port 6380 --dir /tmp/redis-data --dbfilename dump.rdb
 ```
 
 Architecture, request flow, threading model and RESP framing are documented in
@@ -40,12 +46,12 @@ Architecture, request flow, threading model and RESP framing are documented in
 ### Strings & Keys
 
 - [x] `SET` (with `PX` expiry), `GET`, `DEL`
-- [ ] `INCR`
-- [ ] `KEYS`, `TYPE`, `CONFIG GET`
+- [x] `INCR`
+- [x] `KEYS`, `TYPE`, `CONFIG GET`
 
 ### Data Structures
 
-- [ ] Lists: `RPUSH`, `LPUSH`, `LRANGE`, `LLEN`, `LPOP`, `BLPOP`
+- [x] Lists: `RPUSH`, `LPUSH`, `LRANGE`, `LLEN`, `LPOP`, `BLPOP`
 - [ ] Sorted sets: `ZADD`, `ZRANK`, `ZRANGE`, `ZCARD`, `ZSCORE`, `ZREM`
 - [ ] Streams: `XADD`, `XRANGE`, `XREAD` (incl. `BLOCK`)
 

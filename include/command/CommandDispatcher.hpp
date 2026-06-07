@@ -10,6 +10,8 @@
 
 struct Context{
     Database* db;
+    std::string dir;
+    std::string dbfilename;
 };
 
 using CommandHandler=

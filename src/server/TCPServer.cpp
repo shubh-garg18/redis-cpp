@@ -58,20 +58,27 @@ void TCPServer::start(){
         throw std::runtime_error(std::string("listen: ")+std::strerror(errno));
     }
 
-    std::cout<<"listening on port "<<port<<"\n";
+    std::cout << "Redis-like server running on port " << port << "\n";
 
     while(true){
         sockaddr_in client{};
         socklen_t len=sizeof(client);
-        int conn=::accept(listen_fd, (sockaddr*)&client, &len);
-        if(conn<0){
+        int connection=::accept(listen_fd, (sockaddr*)&client, &len);
+        if(connection<0){
             if(errno==EINTR) continue;
             std::cerr<<"accept: "<<std::strerror(errno)<<"\n";
             continue;
         }
 
-        // one thread per client; detach so we don't have to track them
-        std::thread t(handle_client, conn, context, std::ref(*dispatcher));
+        Context* ctx = context;
+        Dispatcher* disp = dispatcher;
+        std::thread t([connection, ctx, disp]() {
+            try {
+                handle_client(connection, ctx, *disp);
+            } catch (const std::exception& e) {
+                std::cerr << "client error: " << e.what() << "\n";
+            }
+        });
         t.detach();
     }
 }

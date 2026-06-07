@@ -37,16 +37,20 @@ target_include_directories(protocol PUBLIC include)
 target_compile_options(protocol PRIVATE ${WARNING_FLAGS})
 
 add_library(storage
+    src/storage/Database.cpp
     src/storage/StringStore.cpp
     src/storage/ListStore.cpp
+    src/storage/SortedSetStore.cpp
 )
 target_include_directories(storage PUBLIC include)
+target_link_libraries(storage PUBLIC Threads::Threads)
 target_compile_options(storage PRIVATE ${WARNING_FLAGS})
 
 add_library(command
     src/command/CommandDispatcher.cpp
     src/command/BasicCommands.cpp
     src/command/ListCommands.cpp
+    src/command/SortedSetCommands.cpp
 )
 target_include_directories(command PUBLIC include)
 target_link_libraries(command PUBLIC protocol storage)
@@ -55,6 +59,7 @@ target_compile_options(command PRIVATE ${WARNING_FLAGS})
 add_library(server
     src/server/ClientSession.cpp
     src/server/TCPServer.cpp
+    src/server/TransactionManager.cpp
 )
 target_include_directories(server PUBLIC include)
 target_link_libraries(server PUBLIC command protocol Threads::Threads)

@@ -8,6 +8,9 @@ compile_commands.json
 .idea/
 *.swp
 
+# Claude Code
+.claude/
+
 # Redis runtime data
 *.rdb
 *.aof

@@ -21,6 +21,12 @@ public:
 
     std::optional<std::pair<std::string, std::string>> blpop(const std::vector<std::string>& keys, int timeout);
 
+    bool del(const std::string& key);
+
+    bool exists(const std::string& key);
+    
+    std::vector<std::string> keys();
+
 private:
     std::mutex mutex;
     std::condition_variable cv;

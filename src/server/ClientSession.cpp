@@ -37,6 +37,7 @@ with a std::mutex.
 */
 
 #include "server/ClientSession.hpp"
+#include "server/TransactionManager.hpp"
 #include "protocol/RESPParser.hpp"
 
 #include <unistd.h>
@@ -66,6 +67,7 @@ void handle_client(int connection, Context* context, Dispatcher& dispatcher){
     std::string buffer;
     char chunk[4096];
     bool running=true;
+    TransactionManager txn;
 
     while(running){
         ssize_t n=::read(connection, chunk, sizeof(chunk));
@@ -99,7 +101,10 @@ void handle_client(int connection, Context* context, Dispatcher& dispatcher){
             } else {
                 const std::string& cmd=r.value.arr[0].str;
                 std::vector<RESPMessage> args(r.value.arr.begin()+1, r.value.arr.end());
-                reply=dispatcher.executeCommand(*context, cmd, args);
+                if(txn.shouldHandle(cmd))
+                    reply=txn.handle(*context, dispatcher, cmd, std::move(args));
+                else
+                    reply=dispatcher.executeCommand(*context, cmd, args);
             }
             if(!write_all(connection, reply)){
                 running=false;

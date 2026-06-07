@@ -55,7 +55,7 @@ the code is organised into layers.
    one complete frame.
 5. The frame's first bulk string is the command name; the rest are arguments.
    `Dispatcher::executeCommand` looks up the handler and runs it.
-6. The handler mutates `StringStore` (mutex-protected) and returns a
+6. The handler mutates the relevant store (mutex-protected) and returns a
    RESP-encoded reply, which is written back to the socket.
 
 ---
@@ -77,14 +77,14 @@ the code is organised into layers.
                                  ▼
             ┌──────────────────────────────────────────────────┐
             │                   command/                       │
-            │       Dispatcher  ──►  BasicCommands (PING …)    │
+            │       Dispatcher  ──►  Basic/List commands       │
             └────────────────────┬─────────────────────────────┘
                                  │
                        ┌─────────┴──────────┐
                        ▼                    ▼
             ┌──────────────────┐  ┌──────────────────┐
             │    protocol/     │  │     storage/     │
-            │  RESPParser +    │  │   StringStore    │
+            │  RESPParser +    │  │    Database      │
             │  encoders        │  │   (mutex map)    │
             └──────────────────┘  └──────────────────┘
 ```
@@ -123,8 +123,8 @@ about the layers above.
 - **One thread per client.** Simple, OS-scheduled, costs ~MB of stack per
   thread. Scales to hundreds, breaks down around the C10K mark.
 - **Shared state.** `Database`, `Dispatcher`, and the command table are
-  reachable from every worker; only `StringStore` actually mutates and it
-  guards itself with `std::mutex`.
+  reachable from every worker; typed stores own mutable data and guard it with
+  `std::mutex`.
 - **No graceful shutdown / no connection cap** — deliberate omissions for
   scope.
 
@@ -222,12 +222,87 @@ Other reply types:
 | `SET k v` | 2 (+ PX ms)  | `+OK`                            |
 | `GET k`   | 1            | bulk value or `$-1` (nil)        |
 | `DEL k …` | ≥1           | integer (keys actually removed)  |
+| `INCR k`  | 1            | incremented integer              |
+| `KEYS p`  | 1            | array of matching keys           |
+| `TYPE k`  | 1            | `string`, `list`, or `none`      |
+| `CONFIG GET p` | 2       | config pair or empty array       |
+| `RPUSH k v ...` | ≥2     | new list length                  |
+| `LPUSH k v ...` | ≥2     | new list length                  |
+| `LRANGE k s e` | 3       | array of list elements           |
+| `LLEN k`  | 1            | list length                      |
+| `LPOP k [count]` | 1-2   | popped value, array, or nil      |
+| `BLPOP k ... timeout` | ≥2 | key/value pair or nil array    |
 
 Dispatch is **case-insensitive** — both `PING` and `ping` route to `handlePing`.
 
 ---
 
-## 7. File map
+## 7. Database as a keyspace facade
+
+Redis commands are key-centric: the client says `DEL cart`, not
+`delete cart from the string store`. Internally, however, the implementation
+stores each data type in a separate container:
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│                          Database                            │
+│                 central keyspace / facade                    │
+└───────────────┬──────────────────┬───────────────────────────┘
+                │                  │
+                ▼                  ▼
+       ┌────────────────┐  ┌────────────────┐
+       │  StringStore   │  │   ListStore    │
+       │  string keys   │  │   list keys    │
+       └────────────────┘  └────────────────┘
+```
+
+The `Database` facade owns cross-type behavior:
+
+- `DEL key ...` removes keys no matter which typed store currently owns them.
+- `TYPE key` asks the keyspace which kind of value the key holds.
+- `KEYS pattern` combines keys from all typed stores.
+- Wrong-type checks stay consistent when commands operate on a specific type.
+
+Each store still keeps its own low-level delete function because only that
+store knows its private data structure and locking rules. `Database` does not
+reach into private maps directly; it coordinates the stores through their
+public APIs.
+
+`DEL` flow:
+
+```
+Client
+  │
+  │  DEL cart
+  ▼
+ClientSession
+  │  parse RESP frame
+  ▼
+Dispatcher
+  │  route to handleDel(...)
+  ▼
+BasicCommands::handleDel
+  │  collect key names
+  ▼
+Database::del({"cart"})
+  │
+  ├──► StringStore::del("cart")       // erase if it is a string key
+  │
+  ├──► ListStore::del("cart")         // erase if it is a list key
+  │
+  └──► FutureStore::del("cart")       // same pattern for new data types
+  │
+  ▼
+return count of logical keys removed
+```
+
+This keeps command handlers small and prevents bugs where adding a new data
+type requires updating `DEL`, `TYPE`, and `KEYS` in multiple places. When a new
+store is added, the cross-type behavior is updated in `Database` once.
+
+---
+
+## 8. File map
 
 ```
 include/
@@ -241,13 +316,14 @@ include/
 │   ├── ClientSession.hpp     # handle_client(fd, ctx, disp)
 │   └── TCPServer.hpp         # TCPServer(port, ctx, disp)
 └── storage/
-    ├── Database.hpp          # struct Database { StringStore stringStore; }
-    └── StringStore.hpp       # get / set / del, expiry, mutex
+    ├── Database.hpp          # keyspace facade over typed stores
+    ├── StringStore.hpp       # get / set / del / incr, expiry, mutex
+    └── ListStore.hpp         # push / range / pop / blocking pop, mutex
 
 src/
-├── command/   { BasicCommands.cpp, CommandDispatcher.cpp }
+├── command/   { BasicCommands.cpp, ListCommands.cpp, CommandDispatcher.cpp }
 ├── protocol/  { RESPParser.cpp }
 ├── server/    { ClientSession.cpp, TCPServer.cpp }
-├── storage/   { StringStore.cpp }
+├── storage/   { Database.cpp, StringStore.cpp, ListStore.cpp }
 └── main.cpp
 ```

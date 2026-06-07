@@ -35,84 +35,82 @@ int64_t parse_int(const std::string &chunk, int start, int end){
     return neg?-res:res;
 }
 
+static ParseResult incompleteResult() {
+    ParseResult r;
+    r.ok=false;
+    r.incomplete=true;
+    return r;
+}
+
+static ParseResult successResult(RESPMessage v, int consumed) {
+    ParseResult r;
+    r.value=std::move(v);
+    r.len=consumed;
+    r.ok=true;
+    r.incomplete=false;
+    return r;
+}
+
 static ParseResult ParseAt(const std::string& chunk, int offset);
 
 // Example: "+OK\r\n" or "-ERR ...\r\n"
 static ParseResult stringParser(const std::string &chunk, int offset, RESPMessage::Type type){
     int end=find_crlf(chunk, offset+1);
-    if(end==-1) return {};
+    if(end==-1) return incompleteResult();
     RESPMessage msg;
     msg.type=type;
     msg.str=chunk.substr(offset+1, end-offset-1);
-    ParseResult res;
-    res.value=msg;
-    res.len=end+2-offset;
-    res.ok=true;
-    return res;
+    return successResult(msg, end+2-offset);
 }
 
 // Example: ":123\r\n"
 static ParseResult integerParser(const std::string &chunk, int offset){
     int end=find_crlf(chunk, offset+1);
-    if(end==-1) return {};
+    if(end==-1) return incompleteResult();
     RESPMessage msg;
     msg.type=RESPMessage::Type::INT;
     msg.n=parse_int(chunk, offset+1, end);
-    ParseResult res;
-    res.value=msg;
-    res.len=end+2-offset;
-    res.ok=true;
-    return res;
+    return successResult(msg, end+2-offset);
 }
 
 // Example: "$5\r\nhello\r\n"
 static ParseResult bulkStringParser(const std::string &chunk, int offset){
     int end=find_crlf(chunk, offset+1);
-    if(end==-1) return {};
+    if(end==-1) return incompleteResult();
 
     int64_t len=parse_int(chunk, offset+1, end);
+    int64_t cursor=end+2;
 
     RESPMessage msg;
     if(len==-1){
         msg.type=RESPMessage::Type::NIL;
-        ParseResult res;
-        res.value=msg;
-        res.len=end+2-offset;
-        res.ok=true;
-        return res;
+        return successResult(msg, cursor-offset);
     }
 
-    if((int)chunk.size()<end+2+len+2) return {};
+    if((int64_t)chunk.size()<cursor+len+2) return incompleteResult();
 
-    if(chunk[end+2+len]!='\r' or chunk[end+2+len+1]!='\n') 
+    if(chunk[cursor+len]!='\r' or chunk[cursor+len+1]!='\n') 
         throw std::runtime_error("RESP: invalid bulk string");
 
     msg.type=RESPMessage::Type::BULK;
-    msg.str=chunk.substr(end+2, len);
+    msg.str=chunk.substr(cursor, len);
 
-    ParseResult res;
-    res.value=msg;
-    res.len=end+2+len+2-offset;
-    res.ok=true;
-    return res;
+    return successResult(msg, cursor+len+2-offset);
 }
 
 // Example: "*2\r\n$3\r\nfoo\r\n$3\r\nbar\r\n"
 static ParseResult arrayParser(const std::string &chunk, int offset){
     int end=find_crlf(chunk, offset+1);
-    if(end==-1) return {};
+    if(end==-1) return incompleteResult();
 
     int64_t len=parse_int(chunk, offset+1, end);
 
     RESPMessage msg;
-    int cursor=end+2;
+    int64_t cursor=end+2;
+
     if(len==-1){
         msg.type=RESPMessage::Type::NIL;
-        ParseResult res;
-        res.value=msg;
-        res.len=cursor-offset;
-        res.ok=true;
-        return res;
+        return successResult(msg, cursor-offset);
     }
 
     msg.type=RESPMessage::Type::ARR;
@@ -120,20 +118,19 @@ static ParseResult arrayParser(const std::string &chunk, int offset){
 
     for(int i=0;i<len;i++){
         ParseResult child=ParseAt(chunk, cursor);
-        if(!child.ok) return {};
-        msg.arr.push_back(child.value);
+        if(!child.ok){
+            if(child.incomplete) return incompleteResult();
+            throw std::runtime_error("RESP: array child parse failed");
+        }
+        msg.arr.push_back(std::move(child.value));
         cursor+=child.len;
     }
 
-    ParseResult res;
-    res.value=msg;
-    res.len=cursor-offset;
-    res.ok=true;
-    return res;
+    return successResult(msg, cursor-offset);
 }
 
 static ParseResult ParseAt(const std::string &chunk, int offset){
-    if(offset>=(int)chunk.size()) return {};
+    if(offset>=(int)chunk.size()) return incompleteResult();
 
     char pref=chunk[offset];
 
@@ -149,7 +146,7 @@ static ParseResult ParseAt(const std::string &chunk, int offset){
         case '*':
             return arrayParser(chunk, offset);
         default:
-            throw std::runtime_error("RESP: invalid prefix");
+            throw std::runtime_error("RESP: unknown type byte");
     }
 }
 
@@ -165,7 +162,7 @@ std::string encodeRESPError(const std::string& s){
     return "-"+s+"\r\n";
 }
 
-std::string encodeRESPInteger(long long n){
+std::string encodeRESPInteger(int64_t n){
     return ":"+std::to_string(n)+"\r\n";
 }
 
@@ -175,4 +172,14 @@ std::string encodeRESPBulk(const std::string& s){
 
 std::string encodeRESPNull(){
     return "$-1\r\n";
+}
+
+std::string encodeRESPArray(const std::vector<std::string>& items) {
+    std::string out = encodeRESPArrayHeader(items.size());
+    for (const auto& item : items) out += encodeRESPBulk(item);
+    return out;
+}
+
+std::string encodeRESPArrayHeader(size_t size) {
+    return "*" + std::to_string(size) + "\r\n";
 }

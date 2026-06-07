@@ -6,32 +6,44 @@
 #include "storage/ListStore.hpp"
 #include "protocol/RESPParser.hpp"
 
-static std::string handleRpush(Context& context, const std::vector<RESPMessage>& args){
-    if(args.size()<2) return encodeRESPError("ERR wrong number of arguments for 'Rpush'");
+static std::string wrongTypeError(){
+    return encodeRESPError("WRONGTYPE Operation against a key holding the wrong kind of value");
+}
 
-    const std::string key=args[0].str;
+static std::string handleRpush(Context& context, const std::vector<RESPMessage>& args){
+    if(args.size()<2) return encodeRESPError("ERR wrong number of arguments for 'rpush'");
+
+    const std::string& key=args[0].str;
+    if(context.db->hasWrongType(key, ValueType::List)) return wrongTypeError();
+
     std::vector<std::string> values;
-    for(int i=1; i<args.size(); i++) values.push_back(args[i].str);
+    for(size_t i=1; i<args.size(); i++) values.push_back(args[i].str);
     
     int count=context.db->listStore.rpush(key, values);
+    context.db->touch(key);
     return encodeRESPInteger(count);
 }
 
 static std::string handleLpush(Context& context, const std::vector<RESPMessage>& args){
-    if(args.size()<2) return encodeRESPError("ERR wrong number of arguments for 'Lpush'");
+    if(args.size()<2) return encodeRESPError("ERR wrong number of arguments for 'lpush'");
 
-    const std::string key=args[0].str;
+    const std::string& key=args[0].str;
+    if(context.db->hasWrongType(key, ValueType::List)) return wrongTypeError();
+
     std::vector<std::string> values;
-    for(int i=1; i<args.size(); i++) values.push_back(args[i].str);
+    for(size_t i=1; i<args.size(); i++) values.push_back(args[i].str);
     
     int count=context.db->listStore.lpush(key, values);
+    context.db->touch(key);
     return encodeRESPInteger(count);
 }
 
 static std::string handleLrange(Context& context, const std::vector<RESPMessage>& args){
-    if(args.size()!=3) return encodeRESPError("ERR wrong number of arguments for 'Lrange'");
+    if(args.size()!=3) return encodeRESPError("ERR wrong number of arguments for 'lrange'");
 
-    const std::string key=args[0].str;
+    const std::string& key=args[0].str;
+    if(context.db->hasWrongType(key, ValueType::List)) return wrongTypeError();
+
     int start,end;
 
     try{
@@ -45,16 +57,14 @@ static std::string handleLrange(Context& context, const std::vector<RESPMessage>
     
     auto items=context.db->listStore.lrange(key, start, end);
 
-    std::string res="*"+std::to_string(items.size())+"\r\n";
-    for(auto& m: items) res+=encodeRESPBulk(m);
-
-    return res;
+    return encodeRESPArray(items);
 }
 
-static std::string handleLen(Context& context, const std::vector<RESPMessage>& args){
-    if(args.size()!=1) return encodeRESPError("ERR wrong number of arguments for 'Len'");
+static std::string handleLlen(Context& context, const std::vector<RESPMessage>& args){
+    if(args.size()!=1) return encodeRESPError("ERR wrong number of arguments for 'llen'");
 
-    const std::string key=args[0].str;
+    const std::string& key=args[0].str;
+    if(context.db->hasWrongType(key, ValueType::List)) return wrongTypeError();
 
     int size=context.db->listStore.llen(key);
     return encodeRESPInteger(size);
@@ -62,6 +72,9 @@ static std::string handleLen(Context& context, const std::vector<RESPMessage>& a
 
 static std::string handleLpop(Context& context, const std::vector<RESPMessage>& args){
     if(args.empty() or args.size()>2) return encodeRESPError("ERR wrong number of arguments for 'lpop'");
+
+    const std::string& key=args[0].str;
+    if(context.db->hasWrongType(key, ValueType::List)) return wrongTypeError();
 
     int count=1;
     if(args.size()==2){
@@ -75,13 +88,12 @@ static std::string handleLpop(Context& context, const std::vector<RESPMessage>& 
         if(count<0) return encodeRESPError("ERR value is out of range");
     }
 
-    auto popped=context.db->listStore.lpop({args[0].str}, count);
+    auto popped=context.db->listStore.lpop({key}, count);
     if(popped.empty()) return encodeRESPNull();
+    context.db->touch(key);
     if(args.size()==1) return encodeRESPBulk(popped[0]);
 
-    std::string out="*"+std::to_string(popped.size())+"\r\n";
-    for(const auto& s: popped) out+=encodeRESPBulk(s);
-    return out;
+    return encodeRESPArray(popped);
 }
 
 static std::string handleBlpop(Context& context, const std::vector<RESPMessage>& args){
@@ -99,19 +111,22 @@ static std::string handleBlpop(Context& context, const std::vector<RESPMessage>&
     if(timeout<0) return encodeRESPError("ERR value is out of range");
 
     std::vector<std::string> keys;
-    for(int i=0; i<args.size()-1; i++) keys.push_back(args[i].str);
+    for(size_t i=0; i+1<args.size(); i++){
+        if(context.db->hasWrongType(args[i].str, ValueType::List)) return wrongTypeError();
+        keys.push_back(args[i].str);
+    }
 
     auto popped=context.db->listStore.blpop(keys, timeout);
     if(!popped) return "*-1\r\n";
-
-    return "*2\r\n"+encodeRESPBulk(popped->first)+encodeRESPBulk(popped->second);
+    context.db->touch(popped->first);
+    return encodeRESPArray({popped->first, popped->second});
 }
 
 void registerListCommands(Dispatcher& dispatcher){
     dispatcher.add("LPUSH", handleLpush);
     dispatcher.add("RPUSH", handleRpush);
     dispatcher.add("LRANGE", handleLrange);
-    dispatcher.add("LLEN", handleLen);
+    dispatcher.add("LLEN", handleLlen);
     dispatcher.add("LPOP", handleLpop);
     dispatcher.add("BLPOP", handleBlpop);
 }

@@ -3,6 +3,7 @@
 #include "command/BasicCommands.hpp"
 #include "command/ListCommands.hpp"
 #include "command/SortedSetCommands.hpp"
+#include "command/StreamCommands.hpp"
 #include "server/TCPServer.hpp"
 
 #include <cstdlib>
@@ -42,6 +43,7 @@ int main(int argc, char** argv){
     registerBasicCommands(dispatcher);
     registerListCommands(dispatcher);
     registerSortedSetCommands(dispatcher);
+    registerStreamCommands(dispatcher);
 
     try {
         TCPServer server(port, &ctx, &dispatcher);

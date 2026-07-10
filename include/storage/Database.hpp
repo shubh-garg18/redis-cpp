@@ -9,12 +9,14 @@
 #include "StringStore.hpp"
 #include "ListStore.hpp"
 #include "SortedSetStore.hpp"
+#include "StreamStore.hpp"
 
 enum class ValueType {
     None,
     String,
     List,
     SortedSet,
+    Stream,
 };
 
 class Database {
@@ -22,6 +24,7 @@ public:
     StringStore stringStore;
     ListStore listStore;
     SortedSetStore sortedSetStore;
+    StreamStore streamStore;
 
     int del(const std::vector<std::string>& keys);
     ValueType typeOf(const std::string& key);

@@ -7,6 +7,7 @@ std::string valueTypeName(ValueType type) {
         case ValueType::String: return "string";
         case ValueType::List: return "list";
         case ValueType::SortedSet: return "zset";
+        case ValueType::Stream: return "stream";
         case ValueType::None: return "none";
     }
     return "none";
@@ -16,6 +17,7 @@ ValueType Database::typeOf(const std::string& key) {
     if (stringStore.exists(key)) return ValueType::String;
     if (listStore.exists(key)) return ValueType::List;
     if (sortedSetStore.exists(key)) return ValueType::SortedSet;
+    if (streamStore.exists(key)) return ValueType::Stream;
     return ValueType::None;
 }
 
@@ -35,6 +37,7 @@ int Database::del(const std::vector<std::string>& keys) {
         removed = stringStore.del({key}) > 0 || removed;
         removed = listStore.del(key) || removed;
         removed = sortedSetStore.del(key) || removed;
+        removed = streamStore.del(key) || removed;
         if (removed) count++;
     }
     return count;
@@ -55,6 +58,7 @@ std::vector<std::string> Database::keys(const std::string& pattern) {
     add_matches(stringStore.keys());
     add_matches(listStore.keys());
     add_matches(sortedSetStore.keys());
+    add_matches(streamStore.keys());
     return matched;
 }
 

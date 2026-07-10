@@ -41,6 +41,7 @@ add_library(storage
     src/storage/StringStore.cpp
     src/storage/ListStore.cpp
     src/storage/SortedSetStore.cpp
+    src/storage/StreamStore.cpp
 )
 target_include_directories(storage PUBLIC include)
 target_link_libraries(storage PUBLIC Threads::Threads)
@@ -51,6 +52,7 @@ add_library(command
     src/command/BasicCommands.cpp
     src/command/ListCommands.cpp
     src/command/SortedSetCommands.cpp
+    src/command/StreamCommands.cpp
 )
 target_include_directories(command PUBLIC include)
 target_link_libraries(command PUBLIC protocol storage)

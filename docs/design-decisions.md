@@ -1,0 +1,180 @@
+# Design Decisions
+
+Not an exhaustive log — just the choices that shaped the codebase and the
+tradeoffs each one accepts. Where a decision differs from real Redis, that's
+called out.
+
+---
+
+## 1. Thread-per-connection, not an event loop
+
+Every accepted connection gets its own `std::thread` running `handle_client`.
+Real Redis is famously single-threaded around an `epoll` event loop.
+
+**Why.** The threaded model is dramatically simpler to reason about: each
+handler runs top-to-bottom on its own stack, and a blocking call like `BLPOP`
+can just _block_ the thread instead of registering a continuation. The OS
+scheduler does the multiplexing for free.
+
+**Tradeoff.** Each thread costs ~1 MB of stack, so this scales to hundreds of
+clients and falls over around the C10K mark. An event loop handles 100k+
+connections in one thread — but then every handler must be non-blocking, which
+would turn `BLPOP`/`XREAD` into explicit state machines. For a learning project,
+readability wins.
+
+---
+
+## 2. Typed stores behind a `Database` facade
+
+Rather than one `unordered_map<string, variant<...>>`, each data type lives in
+its own store (`StringStore`, `ListStore`, `SortedSetStore`, `StreamStore`), and
+`Database` is a thin facade over them.
+
+**Why.** Each store picks the container that fits its type and owns its own
+locking, with no giant tagged union to switch on in every command. Cross-type
+operations — `DEL`, `TYPE`, `KEYS`, `hasWrongType` — are written _once_ in the
+facade, so adding a data type is a local change plus a few facade edits, not a
+scavenger hunt.
+
+**Tradeoff.** A key's type is discovered by asking each store in turn, which is
+a handful of hash lookups rather than one. Negligible here, and worth it for
+keeping the type logic out of the command handlers.
+
+---
+
+## 3. One mutex per store, not one global lock
+
+Each store guards its own map with its own `std::mutex`.
+
+**Why.** Two clients hitting a list and a sorted set don't contend. Lock scope
+stays narrow and local to the store that owns the data.
+
+**Tradeoff.** There is no cross-key or cross-type atomicity below the command
+level — a single command is atomic within its store, but the server cannot lock
+"the whole keyspace" for a multi-key invariant. Transactions paper over this at
+a higher level (see §6) using versioning rather than locking.
+
+---
+
+## 4. Handlers return RESP-encoded strings directly
+
+A `CommandHandler` is `std::string(Context&, const vector<RESPMessage>&)`. It
+does its own encoding and hands back bytes ready for the socket.
+
+**Why.** No intermediate "reply object" layer to define, build, and then
+serialize. What you see in a handler is exactly what goes on the wire, which
+makes the encoding easy to follow.
+
+**Tradeoff.** Handlers are coupled to the wire format, and nested replies (a
+stream entry is `[id, [field, value, ...]]`) are assembled by hand with
+`encodeRESPArrayHeader` + concatenation instead of a structured builder. Fine at
+this scale; a builder would earn its keep only with many more compound replies.
+
+---
+
+## 5. Blocking commands block in the handler thread
+
+`BLPOP` and blocking `XREAD` wait on the owning store's `condition_variable`;
+the writer side (`RPUSH`, `XADD`) calls `notify_all` after releasing the lock.
+
+**Why.** This falls straight out of decision §1 — with a thread per client, the
+natural way to wait is to actually sleep the thread. The `condition_variable`
+predicate re-checks the data each wakeup, so spurious wakeups are harmless.
+
+**Tradeoff.** A blocked client holds a whole thread hostage for the duration.
+Under the event-loop model this would be a parked continuation costing almost
+nothing. Consistent with the threading choice, so accepted.
+
+---
+
+## 6. Transactions use optimistic locking, not held locks
+
+`WATCH` records each watched key's current version. `Database` keeps a
+monotonic per-key counter that every mutating handler bumps via `touch(key)`. On
+`EXEC`, if any watched key's version moved, the whole transaction aborts with a
+nil array; otherwise the queued commands run in order.
+
+**Why.** Holding locks across a client's think-time (between `WATCH` and `EXEC`)
+would be a recipe for deadlock and head-of-line blocking. Versioning lets the
+server detect interference after the fact without ever holding a cross-key lock
+— the same compare-and-set idea real Redis uses.
+
+**Tradeoff.** It's optimistic: a transaction can be rejected and retried under
+contention rather than waiting its turn. That's the intended semantic, and it
+keeps the storage layer lock-simple.
+
+---
+
+## 7. `TransactionManager` intercepts before the dispatcher
+
+The transaction state machine is a **per-connection** object that sees every
+command before the dispatcher does. `MULTI`/`EXEC`/`DISCARD`/`WATCH`/`UNWATCH`
+and any queued command are handled there; everything else falls through to the
+dispatcher.
+
+**Why.** Command queueing is connection-local state, so it belongs at the
+connection layer, not smeared across the shared command table. The dispatcher
+stays a pure, stateless name→handler map.
+
+**Tradeoff.** The connection loop has to consult two things (the manager, then
+the dispatcher) instead of one. A small, well-contained cost for keeping the two
+concerns separate.
+
+---
+
+## 8. Streams: append-only vector, cached top, sentinel IDs
+
+A stream is a `vector<StreamEntry>` (append-only, so always sorted) plus a
+cached `top` ID. Auto-generated ID parts are signalled to the store with `-1`
+sentinels, and each entry's fields are a flat `[field, value, ...]` vector.
+
+**Why.** Because IDs strictly increase, appending keeps the vector sorted for
+free — range queries are ordered scans and no sort is ever needed. The cached
+`top` makes validating a new ID and resolving the `$` cursor O(1), and it
+survives an empty stream where "the last element" doesn't exist. Fields stay a
+flat vector because RESP echoes them back in insertion order; a map would
+destroy that order for no benefit, since they're never looked up by name.
+
+**Tradeoff.** Sentinels (`ms = -1`, `seq = -1`) are less self-documenting than
+`std::optional`, chosen to match the project's plain-types style. `XRANGE` is a
+linear scan rather than a binary search — fine for the sizes this handles.
+
+---
+
+## 9. `WRONGTYPE` enforced through the `ValueType` enum
+
+Every typed command checks `hasWrongType(key, ValueType::X)` up front, which the
+facade answers from a single generic `typeOf` lookup.
+
+**Why.** One place defines "what type is this key," and every command reuses it,
+so type safety is consistent and a new type opts in just by extending the enum
+and `typeOf`.
+
+**Tradeoff.** This is _stricter_ than real Redis on one edge: real Redis lets
+`SET` overwrite a key of any type, whereas here the `hasWrongType` gate is
+applied uniformly. The stricter, more predictable behaviour was chosen
+deliberately and matches across all types.
+
+---
+
+## 10. Lists are backed by `std::vector`, not `std::deque`
+
+**Why.** `std::vector` is the plainest sequence container, and the code reads
+straightforwardly with it.
+
+**Tradeoff.** `LPUSH` and `LPOP` operate at the front, which is O(n) on a vector
+because every element shifts. A `std::deque` would give O(1) at both ends. This
+is a known, accepted simplification — worth revisiting if lists ever see heavy
+head traffic.
+
+---
+
+## 11. In-memory only, strict warnings
+
+There is no persistence yet — the dataset lives entirely in RAM and is lost on
+restart (RDB/AOF are on the roadmap). The whole project compiles under
+`-Wall -Wextra -Wshadow -Wconversion -Wpedantic`.
+
+**Why.** Persistence is a large subsystem best added deliberately rather than
+half-built. The strict warning set catches narrowing conversions and shadowing
+early, which matters most in the byte-twiddling protocol and ID-parsing code.

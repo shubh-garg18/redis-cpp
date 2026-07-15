@@ -4,6 +4,7 @@
 #include "command/ListCommands.hpp"
 #include "command/SortedSetCommands.hpp"
 #include "command/StreamCommands.hpp"
+#include "command/GeoCommands.hpp"
 #include "server/TCPServer.hpp"
 
 #include <cstdlib>
@@ -44,6 +45,7 @@ int main(int argc, char** argv){
     registerListCommands(dispatcher);
     registerSortedSetCommands(dispatcher);
     registerStreamCommands(dispatcher);
+    registerGeoCommands(dispatcher);
 
     try {
         TCPServer server(port, &ctx, &dispatcher);

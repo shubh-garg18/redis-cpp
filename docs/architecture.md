@@ -215,32 +215,36 @@ Other reply types:
 
 ## 6. Commands implemented so far
 
-| Command                                           | Arity       | Reply                                         |
-| ------------------------------------------------- | ----------- | --------------------------------------------- |
-| `PING`                                            | 0 or 1      | `+PONG` / bulk of arg                         |
-| `ECHO`                                            | 1           | bulk of arg                                   |
-| `SET k v`                                         | 2 (+ PX ms) | `+OK`                                         |
-| `GET k`                                           | 1           | bulk value or `$-1` (nil)                     |
-| `DEL k …`                                         | ≥1          | integer (keys actually removed)               |
-| `INCR k`                                          | 1           | incremented integer                           |
-| `KEYS p`                                          | 1           | array of matching keys                        |
-| `TYPE k`                                          | 1           | `string`, `list`, `zset`, `stream`, or `none` |
-| `CONFIG GET p`                                    | 2           | config pair or empty array                    |
-| `RPUSH k v ...`                                   | ≥2          | new list length                               |
-| `LPUSH k v ...`                                   | ≥2          | new list length                               |
-| `LRANGE k s e`                                    | 3           | array of list elements                        |
-| `LLEN k`                                          | 1           | list length                                   |
-| `LPOP k [count]`                                  | 1-2         | popped value, array, or nil                   |
-| `BLPOP k ... timeout`                             | ≥2          | key/value pair or nil array                   |
-| `ZADD k s m ...`                                  | ≥3          | new members added                             |
-| `ZRANK k m`                                       | 2           | rank integer or nil                           |
-| `ZRANGE k s e`                                    | 3           | array of members                              |
-| `ZCARD k`                                         | 1           | member count                                  |
-| `ZSCORE k m`                                      | 2           | bulk score or nil                             |
-| `ZREM k m ...`                                    | ≥2          | members removed                               |
-| `XADD k id f v ...`                               | ≥4          | bulk of the assigned id                       |
-| `XRANGE k s e`                                    | 3           | array of `[id, [f, v, ...]]`                  |
-| `XREAD [COUNT n] [BLOCK ms] STREAMS k ... id ...` | ≥3          | per-stream entries or nil array               |
+| Command                                                      | Arity       | Reply                                             |
+| ------------------------------------------------------------ | ----------- | ------------------------------------------------- |
+| `PING`                                                       | 0 or 1      | `+PONG` / bulk of arg                             |
+| `ECHO`                                                       | 1           | bulk of arg                                       |
+| `SET k v`                                                    | 2 (+ PX ms) | `+OK`                                             |
+| `GET k`                                                      | 1           | bulk value or `$-1` (nil)                         |
+| `DEL k …`                                                    | ≥1          | integer (keys actually removed)                   |
+| `INCR k`                                                     | 1           | incremented integer                               |
+| `KEYS p`                                                     | 1           | array of matching keys                            |
+| `TYPE k`                                                     | 1           | `string`, `list`, `zset`, `stream`, or `none`     |
+| `CONFIG GET p`                                               | 2           | config pair or empty array                        |
+| `RPUSH k v ...`                                              | ≥2          | new list length                                   |
+| `LPUSH k v ...`                                              | ≥2          | new list length                                   |
+| `LRANGE k s e`                                               | 3           | array of list elements                            |
+| `LLEN k`                                                     | 1           | list length                                       |
+| `LPOP k [count]`                                             | 1-2         | popped value, array, or nil                       |
+| `BLPOP k ... timeout`                                        | ≥2          | key/value pair or nil array                       |
+| `ZADD k s m ...`                                             | ≥3          | new members added                                 |
+| `ZRANK k m`                                                  | 2           | rank integer or nil                               |
+| `ZRANGE k s e`                                               | 3           | array of members                                  |
+| `ZCARD k`                                                    | 1           | member count                                      |
+| `ZSCORE k m`                                                 | 2           | bulk score or nil                                 |
+| `ZREM k m ...`                                               | ≥2          | members removed                                   |
+| `XADD k id f v ...`                                          | ≥4          | bulk of the assigned id                           |
+| `XRANGE k s e`                                               | 3           | array of `[id, [f, v, ...]]`                      |
+| `XREAD [COUNT n] [BLOCK ms] STREAMS k ... id ...`            | ≥3          | per-stream entries or nil array                   |
+| `GEOADD k lon lat m ...`                                     | ≥4          | new members added                                 |
+| `GEOPOS k m ...`                                             | ≥1          | array of `[lon, lat]` (or nil per missing member) |
+| `GEODIST k m1 m2 [unit]`                                     | 3-4         | bulk distance or nil                              |
+| `GEOSEARCH k FROMLONLAT lon lat BYRADIUS r unit [ASC\|DESC]` | ≥7          | array of members in range                         |
 
 Dispatch is **case-insensitive** — both `PING` and `ping` route to `handlePing`.
 

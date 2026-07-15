@@ -53,6 +53,7 @@ add_library(command
     src/command/ListCommands.cpp
     src/command/SortedSetCommands.cpp
     src/command/StreamCommands.cpp
+    src/command/GeoCommands.cpp
 )
 target_include_directories(command PUBLIC include)
 target_link_libraries(command PUBLIC protocol storage)

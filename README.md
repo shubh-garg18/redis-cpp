@@ -13,9 +13,9 @@ is a clean, readable implementation of the ideas behind Redis (protocol framing,
 a keyspace of typed stores, blocking commands, and transactions) rather than raw
 throughput.
 
-> **Status:** string/key, list, sorted-set, and stream commands working over TCP,
-> plus `MULTI`/`EXEC` transactions with optimistic `WATCH` locking. Multi-threaded
-> server, one thread per client.
+> **Status:** string/key, list, sorted-set, stream, and geospatial commands
+> working over TCP, plus `MULTI`/`EXEC` transactions with optimistic `WATCH`
+> locking. Multi-threaded server, one thread per client.
 
 ---
 
@@ -62,6 +62,8 @@ dynamic flows (blocking `BLPOP`, `WATCH`/`EXEC`) are in [docs/uml.md](docs/uml.m
 - **Sorted sets** — `ZADD`, `ZRANK`, `ZRANGE`, `ZCARD`, `ZSCORE`, `ZREM`.
 - **Streams** — `XADD` (auto, partial `ms-*`, and explicit IDs), `XRANGE`, and
   `XREAD` with `COUNT`, `BLOCK`, and the `$` cursor.
+- **Geospatial** — `GEOADD`, `GEOPOS`, `GEODIST`, `GEOSEARCH`, sorted-set backed
+  with a Redis-compatible 52-bit geohash (`TYPE` reports `zset`).
 - **Transactions** — `MULTI`, `EXEC`, `DISCARD`, plus `WATCH`/`UNWATCH`
   optimistic locking that aborts the transaction if a watched key changed.
 - **Concurrency** — one thread per connection; each typed store guards its own
@@ -183,11 +185,11 @@ together in `src/main.cpp`. Dependencies flow downward only: `server` → `comma
 - [x] Sorted sets: `ZADD`, `ZRANK`, `ZRANGE`, `ZCARD`, `ZSCORE`, `ZREM`
 - [x] Streams: `XADD`, `XRANGE`, `XREAD` (with `COUNT` and `BLOCK`)
 - [x] Transactions: `MULTI`, `EXEC`, `DISCARD`, `WATCH`, `UNWATCH`
+- [x] Geo: `GEOADD`, `GEOPOS`, `GEODIST`, `GEOSEARCH`
 
 ### Planned
 
 - [ ] Pub/Sub: `SUBSCRIBE`, `UNSUBSCRIBE`, `PUBLISH`
-- [ ] Geo: `GEOADD`, `GEOPOS`, `GEODIST`, `GEOSEARCH`
 - [ ] Persistence: RDB snapshot loading, AOF
 - [ ] Replication: `REPLICAOF`, `PSYNC`
 - [ ] Beyond: multi-database (`SELECT`), eviction policies, cluster sharding

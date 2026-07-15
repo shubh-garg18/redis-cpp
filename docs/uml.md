@@ -10,8 +10,10 @@ architecture.md and are not repeated here.
 
 ## 1. Class diagram
 
-The core types and how they relate. `♦──` is composition (owns), `──▷` is
-inheritance/uses.
+The core types and how they relate. `♦──` is composition (owns), `..>` is
+uses/depends. Command modules (`<<module>>`) are groups of free handler
+functions — each registers on the `Dispatcher` and operates on one store; note
+`GeoCommands` has no store of its own, storing its geohash in the sorted set.
 
 ```mermaid
 classDiagram
@@ -99,6 +101,27 @@ classDiagram
         +string error
     }
 
+    class BasicCommands {
+        <<module>>
+        +registerBasicCommands(Dispatcher&)
+    }
+    class ListCommands {
+        <<module>>
+        +registerListCommands(Dispatcher&)
+    }
+    class SortedSetCommands {
+        <<module>>
+        +registerSortedSetCommands(Dispatcher&)
+    }
+    class StreamCommands {
+        <<module>>
+        +registerStreamCommands(Dispatcher&)
+    }
+    class GeoCommands {
+        <<module>>
+        +registerGeoCommands(Dispatcher&)
+    }
+
     TCPServer --> Context : holds
     TCPServer --> Dispatcher : holds
     TCPServer ..> TransactionManager : spawns per client
@@ -115,6 +138,18 @@ classDiagram
     StreamStore *-- StreamEntry
     StreamEntry *-- StreamID
     StreamStore ..> XAddResult : returns
+
+    BasicCommands ..> Dispatcher : registers on
+    ListCommands ..> Dispatcher : registers on
+    SortedSetCommands ..> Dispatcher : registers on
+    StreamCommands ..> Dispatcher : registers on
+    GeoCommands ..> Dispatcher : registers on
+
+    BasicCommands ..> StringStore : operates on
+    ListCommands ..> ListStore : operates on
+    SortedSetCommands ..> SortedSetStore : operates on
+    StreamCommands ..> StreamStore : operates on
+    GeoCommands ..> SortedSetStore : geohash in zset
 ```
 
 ---

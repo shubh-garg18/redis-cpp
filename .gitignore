@@ -3,6 +3,10 @@ build/
 .cache/
 compile_commands.json
 
+# Doc tooling configs
+cspell.json
+.markdownlint.json
+
 # IDE
 .vscode/
 .idea/

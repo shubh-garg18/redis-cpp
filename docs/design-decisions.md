@@ -178,3 +178,31 @@ restart (RDB/AOF are on the roadmap). The whole project compiles under
 **Why.** Persistence is a large subsystem best added deliberately rather than
 half-built. The strict warning set catches narrowing conversions and shadowing
 early, which matters most in the byte-twiddling protocol and ID-parsing code.
+
+---
+
+## 12. Pub/Sub delivers across connections via a shared registry
+
+Pub/Sub is the first feature where a handler must write to a connection _other_
+than the caller's. It adds a per-connection `ClientState` (socket fd, a
+`writeMutex`, and the subscribed channels), reachable from handlers through a
+per-connection copy of `Context`, plus a shared `PubSub` registry mapping
+`channel → {ClientState*}`. `PUBLISH` looks the channel up and writes the
+message frame straight into each subscriber's socket. Pattern subscriptions
+(`PSUBSCRIBE`) were intentionally left out to keep the feature on the delivery
+mechanism rather than glob matching.
+
+**Why.** No new keyspace type is involved, so it doesn't belong in `Database`;
+it's a separate cross-connection service. Giving each connection a `ClientState`
+that other threads can reach is the smallest thing that makes fan-out possible,
+and it doubles as the scaffold auth/replication will reuse.
+
+**Tradeoff.** Two threads can write to one socket — a `PUBLISH` from another
+connection and that client's own replies — so every write goes through the
+connection's `writeMutex`, with lock order always registry → `writeMutex` (never
+the reverse, so no deadlock). Delivery holds the single registry mutex while
+writing to sockets, which is simple and keeps a subscriber from being freed
+mid-publish, but means a stalled subscriber can back-pressure the whole
+subsystem. Real Redis avoids this with non-blocking sockets and per-client
+output buffers; the blocking version is accepted here for the same reason as the
+thread-per-client model.

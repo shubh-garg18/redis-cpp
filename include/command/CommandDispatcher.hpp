@@ -8,10 +8,15 @@
 #include "storage/Database.hpp"
 #include "protocol/RESPMessage.hpp"
 
+struct ClientState;
+class PubSub;
+
 struct Context{
     Database* db;
     std::string dir;
     std::string dbfilename;
+    ClientState* client = nullptr;
+    PubSub* pubsub = nullptr;
 };
 
 using CommandHandler=

@@ -37,21 +37,25 @@ with a std::mutex.
 */
 
 #include "server/ClientSession.hpp"
+#include "server/ClientState.hpp"
 #include "server/TransactionManager.hpp"
+#include "pubsub/PubSub.hpp"
 #include "protocol/RESPParser.hpp"
 
 #include <unistd.h>
 #include <cerrno>
 #include <cstring>
 #include <iostream>
+#include <mutex>
 #include <string>
 #include <vector>
 
-static bool write_all(int connection, const std::string& data){
+static bool write_all(ClientState& client, const std::string& data){
+    std::lock_guard<std::mutex> lock(client.writeMutex);
     const char* p=data.data();
     size_t left=data.size();
     while(left>0){
-        ssize_t n=::write(connection, p, left);
+        ssize_t n=::write(client.fd, p, left);
         if(n<0){
             if(errno==EINTR) continue;
             return false;
@@ -64,6 +68,23 @@ static bool write_all(int connection, const std::string& data){
 }
 
 void handle_client(int connection, Context* context, Dispatcher& dispatcher){
+    ClientState client(connection);
+    Context ctx=*context;
+    ctx.client=&client;
+
+    // Runs on every exit, including a handler throwing: the client must leave
+    // the pubsub registry before its ClientState is destroyed, or a later
+    // PUBLISH writes to a freed pointer.
+    struct Teardown {
+        int fd;
+        ClientState* client;
+        PubSub* pubsub;
+        ~Teardown(){
+            if(pubsub) pubsub->dropClient(client);
+            ::close(fd);
+        }
+    } teardown{connection, &client, ctx.pubsub};
+
     std::string buffer;
     char chunk[4096];
     bool running=true;
@@ -84,7 +105,7 @@ void handle_client(int connection, Context* context, Dispatcher& dispatcher){
             try {
                 r=RESPParser(buffer);
             } catch(const std::exception& e){
-                write_all(connection, encodeRESPError(std::string("ERR protocol: ")+e.what()));
+                write_all(client, encodeRESPError(std::string("ERR protocol: ")+e.what()));
                 running=false;
                 break;
             }
@@ -102,11 +123,11 @@ void handle_client(int connection, Context* context, Dispatcher& dispatcher){
                 const std::string& cmd=r.value.arr[0].str;
                 std::vector<RESPMessage> args(r.value.arr.begin()+1, r.value.arr.end());
                 if(txn.shouldHandle(cmd))
-                    reply=txn.handle(*context, dispatcher, cmd, std::move(args));
+                    reply=txn.handle(ctx, dispatcher, cmd, std::move(args));
                 else
-                    reply=dispatcher.executeCommand(*context, cmd, args);
+                    reply=dispatcher.executeCommand(ctx, cmd, args);
             }
-            if(!write_all(connection, reply)){
+            if(!write_all(client, reply)){
                 running=false;
                 break;
             }
@@ -116,5 +137,4 @@ void handle_client(int connection, Context* context, Dispatcher& dispatcher){
         }
     }
 
-    ::close(connection);
 }

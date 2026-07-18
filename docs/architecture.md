@@ -245,6 +245,10 @@ Other reply types:
 | `GEOPOS k m ...`                                             | ≥1          | array of `[lon, lat]` (or nil per missing member) |
 | `GEODIST k m1 m2 [unit]`                                     | 3-4         | bulk distance or nil                              |
 | `GEOSEARCH k FROMLONLAT lon lat BYRADIUS r unit [ASC\|DESC]` | ≥7          | array of members in range                         |
+| `SUBSCRIBE ch ...`                                           | ≥1          | one `[subscribe, ch, count]` array per channel    |
+| `UNSUBSCRIBE [ch ...]`                                       | ≥0          | one `[unsubscribe, ch, count]` array per channel  |
+| `PUBLISH ch msg`                                             | 2           | integer (subscribers the message reached)         |
+| `PUBSUB CHANNELS` / `PUBSUB NUMSUB ch ...`                   | ≥1          | active channels / flat `[ch, count, ...]` array   |
 
 Dispatch is **case-insensitive** — both `PING` and `ping` route to `handlePing`.
 
@@ -329,12 +333,17 @@ include/
 │   ├── ListCommands.hpp      # registerListCommands(Dispatcher&)
 │   ├── SortedSetCommands.hpp # registerSortedSetCommands(Dispatcher&)
 │   ├── StreamCommands.hpp    # registerStreamCommands(Dispatcher&)
+│   ├── GeoCommands.hpp       # registerGeoCommands(Dispatcher&)
+│   ├── PubSubCommands.hpp    # registerPubSubCommands(Dispatcher&)
 │   └── CommandDispatcher.hpp # Context, Dispatcher, toUpper()
 ├── protocol/
 │   ├── RESPMessage.hpp       # the tagged union for parsed values
 │   └── RESPParser.hpp        # RESPParser + encoders + parse_int
+├── pubsub/
+│   └── PubSub.hpp            # channel → subscribers registry
 ├── server/
 │   ├── ClientSession.hpp     # handle_client(fd, ctx, disp)
+│   ├── ClientState.hpp       # per-connection fd + writeMutex + channels
 │   ├── TransactionManager.hpp# per-conn MULTI/EXEC/WATCH state
 │   └── TCPServer.hpp         # TCPServer(port, ctx, disp)
 └── storage/
@@ -346,8 +355,10 @@ include/
 
 src/
 ├── command/   { BasicCommands.cpp, ListCommands.cpp, SortedSetCommands.cpp,
-│                StreamCommands.cpp, CommandDispatcher.cpp }
+│                StreamCommands.cpp, GeoCommands.cpp, PubSubCommands.cpp,
+│                CommandDispatcher.cpp }
 ├── protocol/  { RESPParser.cpp }
+├── pubsub/    { PubSub.cpp }
 ├── server/    { ClientSession.cpp, TCPServer.cpp, TransactionManager.cpp }
 ├── storage/   { Database.cpp, StringStore.cpp, ListStore.cpp,
 │                SortedSetStore.cpp, StreamStore.cpp }
@@ -376,3 +387,54 @@ Optimistic locking rides on `Database::version(key)` / `touch(key)` — a
 monotonic per-key counter. Every mutating handler (`SET`, `DEL`, `INCR`, the
 list/zset/stream writers) calls `touch`, so `EXEC` can detect whether a watched
 key changed between `WATCH` and `EXEC` and abort the whole transaction.
+
+---
+
+## 10. Pub/Sub (cross-connection delivery)
+
+Every command until now replied only to the client that sent it. `PUBLISH`
+breaks that: it runs on the publisher's thread but has to write to _other_
+connections' sockets. Three pieces make that possible.
+
+- **`ClientState`** — a per-connection object (socket `fd`, a `writeMutex`, and
+  the set of channels it is subscribed to). It gives a connection an identity
+  that other threads can reach.
+- **Per-connection `Context` copy** — `handle_client` copies the shared
+  `Context` and stamps its own `ClientState*` into it, so a handler can answer
+  "who am I?" (`ctx.client`) while still sharing one `Database` and one
+  `PubSub`.
+- **`PubSub`** — a shared registry mapping `channel → {ClientState*}`, guarded
+  by one mutex. `SUBSCRIBE` registers the caller; `PUBLISH` looks up the channel
+  and writes the `message` frame into each subscriber's `fd`.
+
+```text
+Client A                      Client B
+  │ SUBSCRIBE news              │
+  ▼                            │
+handle_client A                │
+  │ pubsub.subscribe(A,news)   │
+  │  channelSubs[news] += A    │
+  ▼                            ▼
+(blocked in read())      handle_client B
+                              │ PUBLISH news "hi"
+                              ▼
+                          pubsub.publish(news,"hi")
+                              │  for each sub: write(sub.fd, frame)
+                              ▼   (locks A.writeMutex)
+                          A's socket ◄── *3 message news hi
+                              │
+                              ▼  reply to B
+                          :1  (one subscriber reached)
+```
+
+Two threads can now write to the same socket — a `PUBLISH` from another thread
+and the subscriber's own replies — so **every** write goes through that
+connection's `writeMutex`. Lock order is always registry → `writeMutex`, never
+the reverse, so there is no deadlock. On disconnect the connection removes
+itself from the registry (guarded so it runs even if a handler throws) before
+its `ClientState` is destroyed, so `PUBLISH` never touches a freed pointer.
+
+Delivery holds the registry mutex while writing to sockets — simple and safe,
+but a stalled subscriber can back-pressure the subsystem. Real Redis uses
+non-blocking sockets with per-client output buffers; that is the deliberate
+tradeoff here.

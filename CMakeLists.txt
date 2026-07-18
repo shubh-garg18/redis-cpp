@@ -47,6 +47,13 @@ target_include_directories(storage PUBLIC include)
 target_link_libraries(storage PUBLIC Threads::Threads)
 target_compile_options(storage PRIVATE ${WARNING_FLAGS})
 
+add_library(pubsub
+    src/pubsub/PubSub.cpp
+)
+target_include_directories(pubsub PUBLIC include)
+target_link_libraries(pubsub PUBLIC protocol Threads::Threads)
+target_compile_options(pubsub PRIVATE ${WARNING_FLAGS})
+
 add_library(command
     src/command/CommandDispatcher.cpp
     src/command/BasicCommands.cpp
@@ -54,9 +61,10 @@ add_library(command
     src/command/SortedSetCommands.cpp
     src/command/StreamCommands.cpp
     src/command/GeoCommands.cpp
+    src/command/PubSubCommands.cpp
 )
 target_include_directories(command PUBLIC include)
-target_link_libraries(command PUBLIC protocol storage)
+target_link_libraries(command PUBLIC protocol storage pubsub)
 target_compile_options(command PRIVATE ${WARNING_FLAGS})
 
 add_library(server
@@ -77,7 +85,7 @@ add_executable(redis_server
 
 target_include_directories(redis_server PRIVATE include)
 target_compile_options(redis_server PRIVATE ${WARNING_FLAGS})
-target_link_libraries(redis_server PRIVATE protocol storage command server Threads::Threads)
+target_link_libraries(redis_server PRIVATE protocol storage command pubsub server Threads::Threads)
 
 # ============================
 # Build Type Flags

@@ -2,8 +2,8 @@
 
 Diagrams are written in [Mermaid](https://mermaid.js.org/), which GitHub renders
 inline — no image files to keep in sync. These cover what the ASCII diagrams in
-[architecture.md](architecture.md) can't show well: the class structure and two
-dynamic flows. The request flow, module layout, and RESP framing live in
+[architecture.md](architecture.md) can't show well: the class structure and
+three dynamic flows. The request flow, module layout, and RESP framing live in
 architecture.md and are not repeated here.
 
 ---
@@ -13,7 +13,9 @@ architecture.md and are not repeated here.
 The core types and how they relate. `♦──` is composition (owns), `..>` is
 uses/depends. Command modules (`<<module>>`) are groups of free handler
 functions — each registers on the `Dispatcher` and operates on one store; note
-`GeoCommands` has no store of its own, storing its geohash in the sorted set.
+`GeoCommands` has no store of its own, storing its geohash in the sorted set,
+and `PubSubCommands` operates on the shared `PubSub` registry (reaching other
+connections' `ClientState`) rather than on `Database`.
 
 ```mermaid
 classDiagram
@@ -21,6 +23,8 @@ classDiagram
         +Database* db
         +string dir
         +string dbfilename
+        +ClientState* client
+        +PubSub* pubsub
     }
 
     class Dispatcher {
@@ -101,6 +105,24 @@ classDiagram
         +string error
     }
 
+    class PubSub {
+        -mutex mutex
+        -unordered_map~string, set~ClientState*~~ channelSubs
+        +subscribe(c, channel) void
+        +unsubscribe(c, channel) void
+        +dropClient(c) void
+        +publish(channel, message) int
+        +listChannels() vector~string~
+        +numSubscribers(channel) int
+    }
+    class ClientState {
+        +int fd
+        +mutex writeMutex
+        +unordered_set~string~ channels
+        +inSubscribeMode() bool
+        +subscriptionCount() size_t
+    }
+
     class BasicCommands {
         <<module>>
         +registerBasicCommands(Dispatcher&)
@@ -121,13 +143,20 @@ classDiagram
         <<module>>
         +registerGeoCommands(Dispatcher&)
     }
+    class PubSubCommands {
+        <<module>>
+        +registerPubSubCommands(Dispatcher&)
+    }
 
     TCPServer --> Context : holds
     TCPServer --> Dispatcher : holds
     TCPServer ..> TransactionManager : spawns per client
+    TCPServer ..> ClientState : one per client
     TransactionManager ..> Dispatcher : replays queue on EXEC
     TransactionManager ..> Context : reads versions
     Context --> Database : points to
+    Context --> PubSub : points to
+    Context ..> ClientState : current client
     Dispatcher ..> Context : passes to handlers
 
     Database *-- StringStore
@@ -139,17 +168,21 @@ classDiagram
     StreamEntry *-- StreamID
     StreamStore ..> XAddResult : returns
 
+    PubSub ..> ClientState : delivers to
+
     BasicCommands ..> Dispatcher : registers on
     ListCommands ..> Dispatcher : registers on
     SortedSetCommands ..> Dispatcher : registers on
     StreamCommands ..> Dispatcher : registers on
     GeoCommands ..> Dispatcher : registers on
+    PubSubCommands ..> Dispatcher : registers on
 
     BasicCommands ..> StringStore : operates on
     ListCommands ..> ListStore : operates on
     SortedSetCommands ..> SortedSetStore : operates on
     StreamCommands ..> StreamStore : operates on
     GeoCommands ..> SortedSetStore : geohash in zset
+    PubSubCommands ..> PubSub : operates on
 ```
 
 ---
@@ -209,4 +242,35 @@ sequenceDiagram
     DB-->>T: v = 8  ≠ 7
     Note over T: watch dirty → abort
     T-->>C: *-1  (nil, transaction aborted)
+```
+
+---
+
+## 4. Sequence: `PUBLISH` fan-out across connections
+
+The publisher's thread writes into the subscriber's socket. The registry maps a
+channel to the subscribers listening on it; delivery locks each subscriber's
+`writeMutex` so it can't collide with that client's own replies.
+
+```mermaid
+sequenceDiagram
+    participant A as Client A (subscriber)
+    participant HA as handle_client A
+    participant PS as PubSub
+    participant HB as handle_client B
+    participant B as Client B (publisher)
+
+    A->>HA: SUBSCRIBE news
+    HA->>PS: subscribe(A, "news")
+    Note over PS: channelSubs["news"] += A_state
+    PS-->>HA: (registered)
+    HA-->>A: [subscribe, news, 1]
+    Note over HA: parks in read()
+
+    B->>HB: PUBLISH news "hi"
+    HB->>PS: publish("news", "hi")
+    Note over PS: look up channelSubs["news"]<br/>lock A.writeMutex, write frame
+    PS-->>A: [message, news, hi]
+    PS-->>HB: delivered = 1
+    HB-->>B: (integer) 1
 ```

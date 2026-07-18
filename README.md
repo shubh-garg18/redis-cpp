@@ -13,9 +13,9 @@ is a clean, readable implementation of the ideas behind Redis (protocol framing,
 a keyspace of typed stores, blocking commands, and transactions) rather than raw
 throughput.
 
-> **Status:** string/key, list, sorted-set, stream, and geospatial commands
-> working over TCP, plus `MULTI`/`EXEC` transactions with optimistic `WATCH`
-> locking. Multi-threaded server, one thread per client.
+> **Status:** string/key, list, sorted-set, stream, geospatial, and pub/sub
+> commands working over TCP, plus `MULTI`/`EXEC` transactions with optimistic
+> `WATCH` locking. Multi-threaded server, one thread per client.
 
 ---
 
@@ -32,22 +32,29 @@ classDiagram
     class ListStore
     class SortedSetStore
     class StreamStore
+    class PubSub
+    class ClientState
 
     TCPServer --> Context : holds
     TCPServer --> Dispatcher : holds
     TCPServer ..> TransactionManager : one per client
+    TCPServer ..> ClientState : one per client
     TransactionManager ..> Dispatcher : replays queue on EXEC
     Context --> Database : points to
+    Context --> PubSub : points to
     Dispatcher ..> Context : passes to handlers
     Database *-- StringStore
     Database *-- ListStore
     Database *-- SortedSetStore
     Database *-- StreamStore
+    PubSub ..> ClientState : delivers to
 ```
 
 A per-client `TCPServer` thread runs the transaction manager and dispatcher; the
-`Database` facade owns one typed store per data type. Full class members and the
-dynamic flows (blocking `BLPOP`, `WATCH`/`EXEC`) are in [docs/uml.md](docs/uml.md).
+`Database` facade owns one typed store per data type, and the shared `PubSub`
+registry fans messages out to each subscriber's `ClientState`. Full class
+members and the dynamic flows (blocking `BLPOP`, `WATCH`/`EXEC`, `PUBLISH`
+fan-out) are in [docs/uml.md](docs/uml.md).
 
 ---
 
@@ -64,6 +71,9 @@ dynamic flows (blocking `BLPOP`, `WATCH`/`EXEC`) are in [docs/uml.md](docs/uml.m
   `XREAD` with `COUNT`, `BLOCK`, and the `$` cursor.
 - **Geospatial** — `GEOADD`, `GEOPOS`, `GEODIST`, `GEOSEARCH`, sorted-set backed
   with a Redis-compatible 52-bit geohash (`TYPE` reports `zset`).
+- **Pub/Sub** — `SUBSCRIBE`, `UNSUBSCRIBE`, `PUBLISH`, and `PUBSUB`
+  (`CHANNELS`/`NUMSUB`), delivering messages across connections from a shared
+  channel registry.
 - **Transactions** — `MULTI`, `EXEC`, `DISCARD`, plus `WATCH`/`UNWATCH`
   optimistic locking that aborts the transaction if a watched key changed.
 - **Concurrency** — one thread per connection; each typed store guards its own
@@ -133,6 +143,19 @@ OK
 > XREAD COUNT 10 STREAMS events 0
 ...
 
+# in one client:
+> SUBSCRIBE news
+1) "subscribe"
+2) "news"
+3) (integer) 1
+# in another client:
+> PUBLISH news "hello"
+(integer) 1
+# the first client then receives:
+1) "message"
+2) "news"
+3) "hello"
+
 > WATCH balance
 OK
 > MULTI
@@ -161,8 +184,9 @@ QUEUED
 include/          public headers (.hpp)
   protocol/       RESPMessage, RESPParser + encoders
   storage/        Database facade + StringStore, ListStore, SortedSetStore, StreamStore
+  pubsub/         PubSub channel registry
   command/        Dispatcher, Context, per-family command registration
-  server/         TCPServer, per-connection handler, TransactionManager
+  server/         TCPServer, per-connection handler + ClientState, TransactionManager
 src/              implementations, mirroring include/
 docs/             architecture, design decisions, UML
 ```
@@ -186,10 +210,11 @@ together in `src/main.cpp`. Dependencies flow downward only: `server` → `comma
 - [x] Streams: `XADD`, `XRANGE`, `XREAD` (with `COUNT` and `BLOCK`)
 - [x] Transactions: `MULTI`, `EXEC`, `DISCARD`, `WATCH`, `UNWATCH`
 - [x] Geo: `GEOADD`, `GEOPOS`, `GEODIST`, `GEOSEARCH`
+- [x] Pub/Sub: `SUBSCRIBE`, `UNSUBSCRIBE`, `PUBLISH`, `PUBSUB`
 
 ### Planned
 
-- [ ] Pub/Sub: `SUBSCRIBE`, `UNSUBSCRIBE`, `PUBLISH`
+- [ ] Auth: `AUTH`, password-gated connections
 - [ ] Persistence: RDB snapshot loading, AOF
 - [ ] Replication: `REPLICAOF`, `PSYNC`
 - [ ] Beyond: multi-database (`SELECT`), eviction policies, cluster sharding

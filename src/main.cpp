@@ -5,6 +5,8 @@
 #include "command/SortedSetCommands.hpp"
 #include "command/StreamCommands.hpp"
 #include "command/GeoCommands.hpp"
+#include "command/PubSubCommands.hpp"
+#include "pubsub/PubSub.hpp"
 #include "server/TCPServer.hpp"
 
 #include <cstdlib>
@@ -38,7 +40,9 @@ int main(int argc, char** argv){
     std::string dbfilename = parseStringFlag(argc, argv, "--dbfilename", "dump.rdb");
 
     Database db;
+    PubSub pubsub;
     Context ctx{&db, dir, dbfilename};
+    ctx.pubsub=&pubsub;
 
     Dispatcher dispatcher;
     registerBasicCommands(dispatcher);
@@ -46,6 +50,7 @@ int main(int argc, char** argv){
     registerSortedSetCommands(dispatcher);
     registerStreamCommands(dispatcher);
     registerGeoCommands(dispatcher);
+    registerPubSubCommands(dispatcher);
 
     try {
         TCPServer server(port, &ctx, &dispatcher);

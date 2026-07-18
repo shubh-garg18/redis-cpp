@@ -27,6 +27,7 @@ classDiagram
         +ClientState* client
         +PubSub* pubsub
         +AuthConfig* auth
+        +AofWriter* aof
     }
 
     class Dispatcher {
@@ -129,6 +130,13 @@ classDiagram
         +string requirepass
         +enabled() bool
     }
+    class AofWriter {
+        -FILE* file
+        -mutex mutex
+        +open(path) bool
+        +isOpen() bool
+        +append(resp) void
+    }
 
     class BasicCommands {
         <<module>>
@@ -168,8 +176,10 @@ classDiagram
     Context --> Database : points to
     Context --> PubSub : points to
     Context --> AuthConfig : points to
+    Context --> AofWriter : points to
     Context ..> ClientState : current client
     Dispatcher ..> Context : passes to handlers
+    Dispatcher ..> AofWriter : journals writes
 
     Database *-- StringStore
     Database *-- ListStore

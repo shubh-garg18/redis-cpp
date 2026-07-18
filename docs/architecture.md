@@ -344,6 +344,8 @@ include/
 ├── protocol/
 │   ├── RESPMessage.hpp       # the tagged union for parsed values
 │   └── RESPParser.hpp        # RESPParser + encoders + parse_int
+├── persistence/
+│   └── AofWriter.hpp         # append-only file writer (thread-safe)
 ├── pubsub/
 │   └── PubSub.hpp            # channel → subscribers registry
 ├── server/
@@ -362,6 +364,7 @@ src/
 ├── command/   { BasicCommands.cpp, ListCommands.cpp, SortedSetCommands.cpp,
 │                StreamCommands.cpp, GeoCommands.cpp, PubSubCommands.cpp,
 │                AuthCommands.cpp, CommandDispatcher.cpp }
+├── persistence/ { AofWriter.cpp }
 ├── protocol/  { RESPParser.cpp }
 ├── pubsub/    { PubSub.cpp }
 ├── server/    { ClientSession.cpp, TCPServer.cpp, TransactionManager.cpp }
@@ -482,3 +485,58 @@ unauthenticated client can't even open a transaction to smuggle commands past
 the check. `AUTH` is the single command allowed through, and the exemption is
 case-insensitive (`toUpper(cmd) != "AUTH"`). When no password is set the whole
 gate short-circuits and behaviour is identical to before.
+
+---
+
+## 12. AOF persistence (journal + replay)
+
+With `--appendonly yes`, the server survives a restart by keeping a log of every
+write. It's a write-ahead journal: each mutating command is appended to the file
+as a RESP array as it runs, and on startup the file is replayed to rebuild the
+dataset.
+
+**The hook lives in `Dispatcher::executeCommand`, not the connection loop.**
+After a handler runs, `propagateToAof` appends the command if it's a write. That
+location is deliberate: `EXEC` replays queued commands _through the dispatcher_,
+so hooking here captures transaction writes for free — hooking in the connection
+loop would miss them.
+
+```text
+executeCommand(cmd)
+   │
+   ▼
+run handler ──► reply
+   │
+   ▼
+propagateToAof(cmd, args, reply)
+   │  write command?  errored?  aof open?
+   ▼
+append RESP to the AOF file (+ flush)
+```
+
+**Non-deterministic commands are rewritten to what actually happened**, so replay
+reproduces the same state rather than re-rolling the dice:
+
+| Command      | Journaled as                       | Why                                                  |
+| ------------ | ---------------------------------- | ---------------------------------------------------- |
+| `XADD k *`   | `XADD k <concrete-id>`             | `*` would generate a _new_ id on replay              |
+| `BLPOP k t`  | `LPOP <popped-key>`                | a blocking pop replays as a plain pop; timeouts skip |
+| `SET k v PX` | `SET k v PXAT <absolute-deadline>` | relative TTL would re-base to the restart clock      |
+
+**Replay happens before the writer opens.** `replayAOF` runs the file through
+`executeCommand` while `ctx.aof` is still null, so the `isOpen()` guard in
+`propagateToAof` is false and replayed writes are _not_ re-appended into the file
+being read. Only after replay does `main` `open()` the writer and set `ctx.aof`.
+A truncated or corrupt tail (from a crash mid-write) stops replay cleanly rather
+than failing.
+
+**Known limitations** (deliberate, for a thread-per-client learning build):
+
+- The append happens _after_ the handler's mutation, under a separate mutex, so
+  two concurrent writes to the same key can be journaled in the opposite order
+  they were applied. A global write lock would fix it but would undo the
+  one-mutex-per-store design.
+- `fflush` (not `fsync`) after each write: survives a process crash, not an OS
+  crash / power loss.
+- Expiry uses a monotonic clock, so `PXAT` deadlines are correct across a process
+  restart (the case AOF protects) but not across a machine reboot.

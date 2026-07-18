@@ -15,8 +15,8 @@ throughput.
 
 > **Status:** string/key, list, sorted-set, stream, geospatial, and pub/sub
 > commands working over TCP, plus `MULTI`/`EXEC` transactions with optimistic
-> `WATCH` locking and optional password authentication. Multi-threaded server,
-> one thread per client.
+> `WATCH` locking, optional password authentication, and AOF persistence.
+> Multi-threaded server, one thread per client.
 
 ---
 
@@ -79,6 +79,9 @@ fan-out) are in [docs/uml.md](docs/uml.md).
   optimistic locking that aborts the transaction if a watched key changed.
 - **Authentication** — optional `--requirepass`; unauthenticated connections are
   rejected with `NOAUTH` until they send `AUTH`, plus `ACL WHOAMI`.
+- **Persistence** — optional append-only file (`--appendonly yes`): every write is
+  journaled as it runs and replayed at startup, with non-deterministic commands
+  (`XADD *`, `BLPOP`, relative `PX` expiry) rewritten to their concrete effect.
 - **Concurrency** — one thread per connection; each typed store guards its own
   data with a `std::mutex`, and blocking commands wait on a `condition_variable`.
 
@@ -118,6 +121,7 @@ The server listens on port `6379` by default:
 ```bash
 ./redis_server
 ./redis_server --port 6380 --dir /tmp/redis-data --dbfilename dump.rdb
+./redis_server --dir /tmp/redis-data --appendonly yes   # persist to an AOF
 ```
 
 A quick smoke test without any client installed:
@@ -215,10 +219,11 @@ together in `src/main.cpp`. Dependencies flow downward only: `server` → `comma
 - [x] Geo: `GEOADD`, `GEOPOS`, `GEODIST`, `GEOSEARCH`
 - [x] Pub/Sub: `SUBSCRIBE`, `UNSUBSCRIBE`, `PUBLISH`, `PUBSUB`
 - [x] Auth: `--requirepass`, `AUTH`, `ACL WHOAMI`, `NOAUTH` gate
+- [x] Persistence: AOF (`--appendonly`, journal + startup replay)
 
 ### Planned
 
-- [ ] Persistence: RDB snapshot loading, AOF
+- [ ] Persistence: RDB snapshot loading (real-Redis interop)
 - [ ] Replication: `REPLICAOF`, `PSYNC`
 - [ ] Beyond: multi-database (`SELECT`), eviction policies, cluster sharding
 

@@ -23,11 +23,13 @@ static std::string handleSet(Context& context, const std::vector<RESPMessage>& a
     const std::string& value=args[1].str;
     int64_t expiry=0;
 
-    // only PX is recognised; anything else is ignored.
-    if(args.size()>3 && toUpper(args[2].str)=="PX"){
+    // PX = relative ms; PXAT = absolute ms deadline (the AOF replays PXAT).
+    if(args.size()>3){
+        std::string opt=toUpper(args[2].str);
         try {
-            int64_t ms=parse_int(args[3].str, 0, (int)args[3].str.size());
-            expiry=StringStore::Date_now()+ms;
+            int64_t v=parse_int(args[3].str, 0, (int)args[3].str.size());
+            if(opt=="PX") expiry=StringStore::Date_now()+v;
+            else if(opt=="PXAT") expiry=v;
         } catch(...) {}
     }
 

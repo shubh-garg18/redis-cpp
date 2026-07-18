@@ -54,6 +54,13 @@ target_include_directories(pubsub PUBLIC include)
 target_link_libraries(pubsub PUBLIC protocol Threads::Threads)
 target_compile_options(pubsub PRIVATE ${WARNING_FLAGS})
 
+add_library(persistence
+    src/persistence/AofWriter.cpp
+)
+target_include_directories(persistence PUBLIC include)
+target_link_libraries(persistence PUBLIC Threads::Threads)
+target_compile_options(persistence PRIVATE ${WARNING_FLAGS})
+
 add_library(command
     src/command/CommandDispatcher.cpp
     src/command/BasicCommands.cpp
@@ -65,7 +72,7 @@ add_library(command
     src/command/AuthCommands.cpp
 )
 target_include_directories(command PUBLIC include)
-target_link_libraries(command PUBLIC protocol storage pubsub)
+target_link_libraries(command PUBLIC protocol storage pubsub persistence)
 target_compile_options(command PRIVATE ${WARNING_FLAGS})
 
 add_library(server
@@ -86,7 +93,7 @@ add_executable(redis_server
 
 target_include_directories(redis_server PRIVATE include)
 target_compile_options(redis_server PRIVATE ${WARNING_FLAGS})
-target_link_libraries(redis_server PRIVATE protocol storage command pubsub server Threads::Threads)
+target_link_libraries(redis_server PRIVATE protocol storage command pubsub persistence server Threads::Threads)
 
 # ============================
 # Build Type Flags

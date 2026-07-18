@@ -233,3 +233,36 @@ recently, so it's left as-is with a comment rather than gold-plated. Only the
 implicit `default` user is modelled, and the pre-auth allow-list is `AUTH`-only
 (real Redis also permits `HELLO`/`RESET`/`QUIT`, none of which this clone
 implements).
+
+---
+
+## 14. AOF: journal at the dispatcher, and canonicalize non-deterministic writes
+
+With `--appendonly yes`, every write is appended to a file as a RESP array and
+replayed at startup. The append hook lives at the end of
+`Dispatcher::executeCommand`, and non-deterministic commands are rewritten to
+their concrete effect before being written: `XADD *`→ the assigned id,
+`BLPOP`→ `LPOP <popped-key>`, `SET … PX`→ `SET … PXAT <absolute>`.
+
+**Why the dispatcher.** `EXEC` runs each queued command back through
+`executeCommand`, so hooking there captures transaction writes for free — a hook
+in the connection loop would miss them. Rewriting non-deterministic input is
+what makes replay faithful: a journal that re-ran `XADD *` or a relative `PX`
+would drift from the original state every restart. Replay runs with `ctx.aof`
+still null so it can't re-append into the file it's reading; only afterward is
+the writer opened.
+
+**Tradeoffs.** Three, all accepted deliberately for a thread-per-client build:
+
+- **Append is outside the mutation lock.** A handler mutates under its store's
+  mutex, then `propagateToAof` appends under the AOF's own mutex — so two
+  concurrent writes to the same key can be journaled in the reverse order they
+  were applied. The only real fix is a global write lock, which would undo
+  decision §3 (one mutex per store); not worth it here.
+- **`fflush`, not `fsync`.** A write is pushed to the OS page cache each time,
+  surviving a process crash but not an OS crash / power loss. Real Redis's
+  `appendfsync everysec` is the middle ground; flush-only keeps it simple.
+- **Monotonic expiry clock.** `PXAT` deadlines are correct across a process
+  restart (what AOF protects against) but not across a machine reboot, since the
+  monotonic clock resets. A wall-clock switch in `StringStore` would close this
+  but changes live TTL semantics, so it's left for a future pass.

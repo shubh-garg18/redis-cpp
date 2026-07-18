@@ -15,7 +15,8 @@ throughput.
 
 > **Status:** string/key, list, sorted-set, stream, geospatial, and pub/sub
 > commands working over TCP, plus `MULTI`/`EXEC` transactions with optimistic
-> `WATCH` locking. Multi-threaded server, one thread per client.
+> `WATCH` locking and optional password authentication. Multi-threaded server,
+> one thread per client.
 
 ---
 
@@ -76,10 +77,22 @@ fan-out) are in [docs/uml.md](docs/uml.md).
   channel registry.
 - **Transactions** — `MULTI`, `EXEC`, `DISCARD`, plus `WATCH`/`UNWATCH`
   optimistic locking that aborts the transaction if a watched key changed.
+- **Authentication** — optional `--requirepass`; unauthenticated connections are
+  rejected with `NOAUTH` until they send `AUTH`, plus `ACL WHOAMI`.
 - **Concurrency** — one thread per connection; each typed store guards its own
   data with a `std::mutex`, and blocking commands wait on a `condition_variable`.
 
 No third-party libraries — just the C++20 standard library and POSIX sockets.
+
+---
+
+## Documentation
+
+| Doc                                                  | What's in it                                                                                 |
+| ---------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| [docs/architecture.md](docs/architecture.md)         | Request flow, threading model, RESP framing, the keyspace facade, and the full command table |
+| [docs/design-decisions.md](docs/design-decisions.md) | The choices worth explaining — and the tradeoffs each one accepts                            |
+| [docs/uml.md](docs/uml.md)                           | Class and sequence diagrams (Mermaid, rendered inline on GitHub)                             |
 
 ---
 
@@ -168,16 +181,6 @@ QUEUED
 
 ---
 
-## Documentation
-
-| Doc                                                  | What's in it                                                                                 |
-| ---------------------------------------------------- | -------------------------------------------------------------------------------------------- |
-| [docs/architecture.md](docs/architecture.md)         | Request flow, threading model, RESP framing, the keyspace facade, and the full command table |
-| [docs/design-decisions.md](docs/design-decisions.md) | The choices worth explaining — and the tradeoffs each one accepts                            |
-| [docs/uml.md](docs/uml.md)                           | Class and sequence diagrams (Mermaid, rendered inline on GitHub)                             |
-
----
-
 ## Project layout
 
 ```text
@@ -211,10 +214,10 @@ together in `src/main.cpp`. Dependencies flow downward only: `server` → `comma
 - [x] Transactions: `MULTI`, `EXEC`, `DISCARD`, `WATCH`, `UNWATCH`
 - [x] Geo: `GEOADD`, `GEOPOS`, `GEODIST`, `GEOSEARCH`
 - [x] Pub/Sub: `SUBSCRIBE`, `UNSUBSCRIBE`, `PUBLISH`, `PUBSUB`
+- [x] Auth: `--requirepass`, `AUTH`, `ACL WHOAMI`, `NOAUTH` gate
 
 ### Planned
 
-- [ ] Auth: `AUTH`, password-gated connections
 - [ ] Persistence: RDB snapshot loading, AOF
 - [ ] Replication: `REPLICAOF`, `PSYNC`
 - [ ] Beyond: multi-database (`SELECT`), eviction policies, cluster sharding

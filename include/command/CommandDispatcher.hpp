@@ -10,6 +10,7 @@
 
 struct ClientState;
 class PubSub;
+struct AuthConfig;
 
 struct Context{
     Database* db;
@@ -17,6 +18,7 @@ struct Context{
     std::string dbfilename;
     ClientState* client = nullptr;
     PubSub* pubsub = nullptr;
+    AuthConfig* auth = nullptr;
 };
 
 using CommandHandler=

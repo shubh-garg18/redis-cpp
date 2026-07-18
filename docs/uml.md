@@ -14,8 +14,9 @@ The core types and how they relate. `♦──` is composition (owns), `..>` is
 uses/depends. Command modules (`<<module>>`) are groups of free handler
 functions — each registers on the `Dispatcher` and operates on one store; note
 `GeoCommands` has no store of its own, storing its geohash in the sorted set,
-and `PubSubCommands` operates on the shared `PubSub` registry (reaching other
-connections' `ClientState`) rather than on `Database`.
+`PubSubCommands` operates on the shared `PubSub` registry (reaching other
+connections' `ClientState`) rather than on `Database`, and `AuthCommands` reads
+the shared `AuthConfig` and flips its own connection's `authenticated` flag.
 
 ```mermaid
 classDiagram
@@ -25,6 +26,7 @@ classDiagram
         +string dbfilename
         +ClientState* client
         +PubSub* pubsub
+        +AuthConfig* auth
     }
 
     class Dispatcher {
@@ -119,8 +121,13 @@ classDiagram
         +int fd
         +mutex writeMutex
         +unordered_set~string~ channels
+        +bool authenticated
         +inSubscribeMode() bool
         +subscriptionCount() size_t
+    }
+    class AuthConfig {
+        +string requirepass
+        +enabled() bool
     }
 
     class BasicCommands {
@@ -147,6 +154,10 @@ classDiagram
         <<module>>
         +registerPubSubCommands(Dispatcher&)
     }
+    class AuthCommands {
+        <<module>>
+        +registerAuthCommands(Dispatcher&)
+    }
 
     TCPServer --> Context : holds
     TCPServer --> Dispatcher : holds
@@ -156,6 +167,7 @@ classDiagram
     TransactionManager ..> Context : reads versions
     Context --> Database : points to
     Context --> PubSub : points to
+    Context --> AuthConfig : points to
     Context ..> ClientState : current client
     Dispatcher ..> Context : passes to handlers
 
@@ -183,6 +195,9 @@ classDiagram
     StreamCommands ..> StreamStore : operates on
     GeoCommands ..> SortedSetStore : geohash in zset
     PubSubCommands ..> PubSub : operates on
+    AuthCommands ..> Dispatcher : registers on
+    AuthCommands ..> AuthConfig : checks password
+    AuthCommands ..> ClientState : sets authenticated
 ```
 
 ---

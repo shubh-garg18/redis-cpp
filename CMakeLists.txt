@@ -62,6 +62,7 @@ add_library(command
     src/command/StreamCommands.cpp
     src/command/GeoCommands.cpp
     src/command/PubSubCommands.cpp
+    src/command/AuthCommands.cpp
 )
 target_include_directories(command PUBLIC include)
 target_link_libraries(command PUBLIC protocol storage pubsub)

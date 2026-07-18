@@ -6,7 +6,9 @@
 #include "command/StreamCommands.hpp"
 #include "command/GeoCommands.hpp"
 #include "command/PubSubCommands.hpp"
+#include "command/AuthCommands.hpp"
 #include "pubsub/PubSub.hpp"
+#include "auth/AuthConfig.hpp"
 #include "server/TCPServer.hpp"
 
 #include <cstdlib>
@@ -38,11 +40,15 @@ int main(int argc, char** argv){
     int port = parsePort(argc, argv);
     std::string dir = parseStringFlag(argc, argv, "--dir", "/tmp/redis-data");
     std::string dbfilename = parseStringFlag(argc, argv, "--dbfilename", "dump.rdb");
+    std::string requirepass = parseStringFlag(argc, argv, "--requirepass", "");
 
     Database db;
     PubSub pubsub;
+    AuthConfig auth;
+    auth.requirepass=requirepass;
     Context ctx{&db, dir, dbfilename};
     ctx.pubsub=&pubsub;
+    ctx.auth=&auth;
 
     Dispatcher dispatcher;
     registerBasicCommands(dispatcher);
@@ -51,6 +57,7 @@ int main(int argc, char** argv){
     registerStreamCommands(dispatcher);
     registerGeoCommands(dispatcher);
     registerPubSubCommands(dispatcher);
+    registerAuthCommands(dispatcher);
 
     try {
         TCPServer server(port, &ctx, &dispatcher);

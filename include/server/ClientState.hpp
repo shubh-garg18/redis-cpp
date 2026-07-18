@@ -12,6 +12,7 @@ struct ClientState {
     std::mutex writeMutex;
 
     std::unordered_set<std::string> channels;
+    bool authenticated = false;
 
     explicit ClientState(int f) : fd(f) {}
 

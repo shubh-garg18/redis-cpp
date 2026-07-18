@@ -249,6 +249,8 @@ Other reply types:
 | `UNSUBSCRIBE [ch ...]`                                       | ≥0          | one `[unsubscribe, ch, count]` array per channel  |
 | `PUBLISH ch msg`                                             | 2           | integer (subscribers the message reached)         |
 | `PUBSUB CHANNELS` / `PUBSUB NUMSUB ch ...`                   | ≥1          | active channels / flat `[ch, count, ...]` array   |
+| `AUTH [user] password`                                       | 1-2         | `+OK` or `WRONGPASS` / `NOAUTH` error             |
+| `ACL WHOAMI`                                                 | 1           | bulk `default`                                    |
 
 Dispatch is **case-insensitive** — both `PING` and `ping` route to `handlePing`.
 
@@ -335,7 +337,10 @@ include/
 │   ├── StreamCommands.hpp    # registerStreamCommands(Dispatcher&)
 │   ├── GeoCommands.hpp       # registerGeoCommands(Dispatcher&)
 │   ├── PubSubCommands.hpp    # registerPubSubCommands(Dispatcher&)
+│   ├── AuthCommands.hpp      # registerAuthCommands(Dispatcher&)
 │   └── CommandDispatcher.hpp # Context, Dispatcher, toUpper()
+├── auth/
+│   └── AuthConfig.hpp        # server-wide requirepass (header-only)
 ├── protocol/
 │   ├── RESPMessage.hpp       # the tagged union for parsed values
 │   └── RESPParser.hpp        # RESPParser + encoders + parse_int
@@ -343,7 +348,7 @@ include/
 │   └── PubSub.hpp            # channel → subscribers registry
 ├── server/
 │   ├── ClientSession.hpp     # handle_client(fd, ctx, disp)
-│   ├── ClientState.hpp       # per-connection fd + writeMutex + channels
+│   ├── ClientState.hpp       # per-connection fd + writeMutex + channels + auth
 │   ├── TransactionManager.hpp# per-conn MULTI/EXEC/WATCH state
 │   └── TCPServer.hpp         # TCPServer(port, ctx, disp)
 └── storage/
@@ -356,7 +361,7 @@ include/
 src/
 ├── command/   { BasicCommands.cpp, ListCommands.cpp, SortedSetCommands.cpp,
 │                StreamCommands.cpp, GeoCommands.cpp, PubSubCommands.cpp,
-│                CommandDispatcher.cpp }
+│                AuthCommands.cpp, CommandDispatcher.cpp }
 ├── protocol/  { RESPParser.cpp }
 ├── pubsub/    { PubSub.cpp }
 ├── server/    { ClientSession.cpp, TCPServer.cpp, TransactionManager.cpp }
@@ -438,3 +443,42 @@ Delivery holds the registry mutex while writing to sockets — simple and safe,
 but a stalled subscriber can back-pressure the subsystem. Real Redis uses
 non-blocking sockets with per-client output buffers; that is the deliberate
 tradeoff here.
+
+---
+
+## 11. Authentication (the `NOAUTH` gate)
+
+If the server is started with `--requirepass <pw>`, connections must
+authenticate before they can do anything. Two pieces of state, at two scopes:
+
+- **`AuthConfig`** — one server-wide struct holding `requirepass`. An empty
+  string means auth is disabled (`enabled()` is `false`), so there is no
+  separate on/off flag.
+- **`ClientState::authenticated`** — a per-connection `bool`, false until this
+  connection sends a correct `AUTH`.
+
+The check is a gate in the connection loop, placed **before** the transaction
+manager and the dispatcher:
+
+```text
+frame arrives
+   │
+   ▼
+auth enabled? ──no──►  (normal dispatch, unchanged)
+   │ yes
+   ▼
+authenticated?  ──yes──►  (normal dispatch)
+   │ no
+   ▼
+command == AUTH? ──yes──►  handleAuth  (may set authenticated = true)
+   │ no
+   ▼
+-NOAUTH Authentication required.
+```
+
+Putting the gate first is what makes it airtight: `MULTI`, `WATCH`, `SUBSCRIBE`,
+and every other command hit the `NOAUTH` branch while unauthenticated, so an
+unauthenticated client can't even open a transaction to smuggle commands past
+the check. `AUTH` is the single command allowed through, and the exemption is
+case-insensitive (`toUpper(cmd) != "AUTH"`). When no password is set the whole
+gate short-circuits and behaviour is identical to before.

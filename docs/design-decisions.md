@@ -206,3 +206,30 @@ mid-publish, but means a stalled subscriber can back-pressure the whole
 subsystem. Real Redis avoids this with non-blocking sockets and per-client
 output buffers; the blocking version is accepted here for the same reason as the
 thread-per-client model.
+
+---
+
+## 13. Auth is a gate in the connection loop, not a per-command check
+
+`--requirepass` sets one server-wide `AuthConfig`, and each connection carries a
+`ClientState::authenticated` bool. The check lives once in `handle_client`,
+**before** the transaction manager and dispatcher: if auth is enabled and the
+connection isn't authenticated, every command except `AUTH` is rejected with
+`NOAUTH`.
+
+**Why.** Putting the gate first — ahead of `TransactionManager::shouldHandle` —
+is what makes it airtight with almost no code. An unauthenticated client's
+`MULTI`, `WATCH`, or `SUBSCRIBE` all hit the `NOAUTH` branch, so there's no way
+to open a transaction and smuggle commands past the check, and no handler needs
+its own auth logic. Auth reused the pub/sub scaffold wholesale: the flag is just
+another field on `ClientState`, reached through the per-connection `Context`
+copy, so the whole feature is one gate plus one command — no new library, no
+locking.
+
+**Tradeoff.** The password compare (`AuthCommands.cpp`) is a plain
+`std::string` comparison, not constant-time, so it's a theoretical timing
+oracle. Network jitter swamps the signal and real Redis only hardened this
+recently, so it's left as-is with a comment rather than gold-plated. Only the
+implicit `default` user is modelled, and the pre-auth allow-list is `AUTH`-only
+(real Redis also permits `HELLO`/`RESET`/`QUIT`, none of which this clone
+implements).

@@ -40,6 +40,7 @@ with a std::mutex.
 #include "server/ClientState.hpp"
 #include "server/TransactionManager.hpp"
 #include "pubsub/PubSub.hpp"
+#include "auth/AuthConfig.hpp"
 #include "protocol/RESPParser.hpp"
 
 #include <unistd.h>
@@ -122,7 +123,9 @@ void handle_client(int connection, Context* context, Dispatcher& dispatcher){
             } else {
                 const std::string& cmd=r.value.arr[0].str;
                 std::vector<RESPMessage> args(r.value.arr.begin()+1, r.value.arr.end());
-                if(txn.shouldHandle(cmd))
+                if(ctx.auth && ctx.auth->enabled() && !client.authenticated && toUpper(cmd)!="AUTH")
+                    reply=encodeRESPError("NOAUTH Authentication required.");
+                else if(txn.shouldHandle(cmd))
                     reply=txn.handle(ctx, dispatcher, cmd, std::move(args));
                 else
                     reply=dispatcher.executeCommand(ctx, cmd, args);

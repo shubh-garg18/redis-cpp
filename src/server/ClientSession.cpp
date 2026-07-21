@@ -87,7 +87,7 @@ void handle_client(int connection, Context* context, Dispatcher& dispatcher){
     } teardown{connection, &client, ctx.pubsub};
 
     std::string buffer;
-    char chunk[4096];
+    char chunk[16384];
     bool running=true;
     TransactionManager txn;
 
@@ -101,12 +101,16 @@ void handle_client(int connection, Context* context, Dispatcher& dispatcher){
         }
         buffer.append(chunk, (size_t)n);
 
+        // Drain every complete frame already buffered, collecting all their
+        // replies into one string so a pipelined burst costs a single write()
+        // instead of one per command.
+        std::string outbuf;
         while(running){
             ParseResult r;
             try {
                 r=RESPParser(buffer);
             } catch(const std::exception& e){
-                write_all(client, encodeRESPError(std::string("ERR protocol: ")+e.what()));
+                outbuf+=encodeRESPError(std::string("ERR protocol: ")+e.what());
                 running=false;
                 break;
             }
@@ -117,27 +121,24 @@ void handle_client(int connection, Context* context, Dispatcher& dispatcher){
                 break;
             }
 
-            std::string reply;
             if(r.value.type!=RESPMessage::Type::ARR || r.value.arr.empty()){
-                reply=encodeRESPError("ERR expected array of bulk strings");
+                outbuf+=encodeRESPError("ERR expected array of bulk strings");
             } else {
                 const std::string& cmd=r.value.arr[0].str;
                 std::vector<RESPMessage> args(r.value.arr.begin()+1, r.value.arr.end());
                 if(ctx.auth && ctx.auth->enabled() && !client.authenticated && toUpper(cmd)!="AUTH")
-                    reply=encodeRESPError("NOAUTH Authentication required.");
+                    outbuf+=encodeRESPError("NOAUTH Authentication required.");
                 else if(txn.shouldHandle(cmd))
-                    reply=txn.handle(ctx, dispatcher, cmd, std::move(args));
+                    outbuf+=txn.handle(ctx, dispatcher, cmd, std::move(args));
                 else
-                    reply=dispatcher.executeCommand(ctx, cmd, args);
-            }
-            if(!write_all(client, reply)){
-                running=false;
-                break;
+                    outbuf+=dispatcher.executeCommand(ctx, cmd, args);
             }
 
             buffer.erase(0, (size_t)r.len);
             if(buffer.empty()) break;
         }
+
+        if(!outbuf.empty() && !write_all(client, outbuf)) break;
     }
 
 }

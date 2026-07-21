@@ -185,55 +185,40 @@ QUEUED
 
 ---
 
-## Project layout
-
-```text
-include/          public headers (.hpp)
-  protocol/       RESPMessage, RESPParser + encoders
-  storage/        Database facade + StringStore, ListStore, SortedSetStore, StreamStore
-  pubsub/         PubSub channel registry
-  command/        Dispatcher, Context, per-family command registration
-  server/         TCPServer, per-connection handler + ClientState, TransactionManager
-src/              implementations, mirroring include/
-docs/             architecture, design decisions, UML
-```
-
-Four static libraries — `protocol`, `storage`, `command`, `server` — are wired
-together in `src/main.cpp`. Dependencies flow downward only: `server` → `command`
-→ `protocol` + `storage`.
-
----
-
-## Roadmap
-
-### Done
-
-- [x] TCP server, one thread per client
-- [x] RESP protocol parser / encoder
-- [x] Case-insensitive command dispatch
-- [x] Strings & keys: `SET` (+`PX`), `GET`, `DEL`, `INCR`, `KEYS`, `TYPE`, `CONFIG GET`
-- [x] Lists: `RPUSH`, `LPUSH`, `LRANGE`, `LLEN`, `LPOP`, `BLPOP`
-- [x] Sorted sets: `ZADD`, `ZRANK`, `ZRANGE`, `ZCARD`, `ZSCORE`, `ZREM`
-- [x] Streams: `XADD`, `XRANGE`, `XREAD` (with `COUNT` and `BLOCK`)
-- [x] Transactions: `MULTI`, `EXEC`, `DISCARD`, `WATCH`, `UNWATCH`
-- [x] Geo: `GEOADD`, `GEOPOS`, `GEODIST`, `GEOSEARCH`
-- [x] Pub/Sub: `SUBSCRIBE`, `UNSUBSCRIBE`, `PUBLISH`, `PUBSUB`
-- [x] Auth: `--requirepass`, `AUTH`, `ACL WHOAMI`, `NOAUTH` gate
-- [x] Persistence: AOF (`--appendonly`, journal + startup replay)
-
-### Planned
-
-- [ ] Persistence: RDB snapshot loading (real-Redis interop)
-- [ ] Replication: `REPLICAOF`, `PSYNC`
-- [ ] Beyond: multi-database (`SELECT`), eviction policies, cluster sharding
-
----
-
 ## Testing
 
-There is no automated test suite yet. Behaviour is verified manually with
-`redis-cli` and `nc` against a running server — see the smoke test above and the
-examples in [docs/architecture.md](docs/architecture.md).
+Two scripts under `tests/` exercise a real server over TCP — they boot it on a
+scratch port and temp dir, drive it with `redis-cli`, and tear it down cleanly.
+
+```bash
+./tests/run_tests.sh     # integration checks; exits non-zero on any failure
+./tests/run_bench.sh     # throughput via redis-benchmark
+```
+
+`run_tests.sh` runs ~50 assertions across every feature — strings, expiry,
+lists, sorted sets, streams, geo, transactions, pub/sub, `WRONGTYPE`, auth
+(`NOAUTH`/`WRONGPASS`/`AUTH`/`ACL WHOAMI`), and AOF surviving a restart. The
+few things a serial script can't stage — cross-connection pub/sub delivery and a
+`WATCH` abort race — stay manual.
+
+### Benchmarks
+
+`run_bench.sh` wraps `redis-benchmark` (optimized `Release` build). One request
+at a time the server does ~16k ops/sec; pipelined — which the connection loop
+drains natively — it reaches **~225k ops/sec** at depth 16, scaling past 400k at
+higher depths:
+
+| Mode                | SET   | GET   |
+| ------------------- | ----: | ----: |
+| serial (`-P 1`)     | ~16k  | ~16k  |
+| pipelined (`-P 16`) | ~225k | ~229k |
+| pipelined (`-P 32`) | ~331k | ~413k |
+| pipelined (`-P 64`) | ~376k | ~503k |
+
+Two changes unlock the pipelined numbers: `TCP_NODELAY` per connection (else
+Nagle's algorithm stalls the batched replies) and coalescing a drained batch's
+replies into a single `write()` instead of one per command. See
+[design-decisions](docs/design-decisions.md) §16–17 for methodology and caveats.
 
 ---
 

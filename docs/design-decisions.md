@@ -266,3 +266,73 @@ the writer opened.
   restart (what AOF protects against) but not across a machine reboot, since the
   monotonic clock resets. A wall-clock switch in `StringStore` would close this
   but changes live TTL semantics, so it's left for a future pass.
+
+---
+
+## 15. Tests drive a real server, not the code in-process
+
+The suite in `tests/run_tests.sh` is an integration harness: it starts the
+actual `redis_server` binary on a scratch port + temp dir, talks to it with
+`redis-cli`, and asserts on the replies. There are no in-process unit tests.
+
+**Why.** The whole product _is_ the wire behaviour — RESP framing, the command
+dispatch, the connection lifecycle — so testing it the way a client sees it
+covers the parts that matter with none of the mocking a unit test would need.
+One script, no test framework to pull in, and it doubles as living
+documentation of every command's expected reply. A non-zero exit on any failed
+assertion makes it drop straight into CI later.
+
+**Tradeoff.** A serial script driving one `redis-cli` at a time can't stage the
+genuinely concurrent cases — cross-connection pub/sub delivery, or a `WATCH`
+abort race between two clients — so those stay manual. And the benchmark
+(`tests/run_bench.sh`) deliberately omits `LPUSH`/`LPOP` from its default set:
+they expose the O(n) `std::vector` front-op cost from §10, which is worth
+_demonstrating_ on demand but would otherwise dominate a routine run. The
+benchmark's flat throughput across build types is the §1 thread-per-client
+tradeoff made visible, not a thing to tune away.
+
+---
+
+## 16. `TCP_NODELAY` on every connection
+
+Each accepted socket has `TCP_NODELAY` set, disabling Nagle's algorithm.
+
+**Why.** This surfaced from benchmarking, not a priori. Serial throughput
+(`-P 1`) was ~15k ops/sec; turning on pipelining (`redis-benchmark -P 8`) made
+it _worse_ — ~4k — the opposite of what pipelining should do. The cause is the
+classic Nagle + delayed-ACK interaction: a pipeline makes the server emit
+several small replies back-to-back, and Nagle holds each one waiting for the
+previous segment's ACK, which the client delays. Setting `TCP_NODELAY` flushes
+replies immediately; pipelined throughput then jumps to ~120k ops/sec at depth
+16 and ~200k at depth 32 — a >30× swing from a one-line `setsockopt`. It's also
+exactly what real Redis does, and for the same reason.
+
+**Tradeoff.** Nagle exists to coalesce tiny packets into fewer, fuller
+segments; disabling it means a burst of small replies goes out as more, smaller
+TCP segments. For a request/response cache where latency dominates that's the
+right call — the serialization already batches within a single `write` where it
+can — but it's a deliberate bandwidth-for-latency trade, not a free win.
+
+---
+
+## 17. One `write()` per drained batch, not per command
+
+The connection loop reads bytes, then drains _every_ complete frame already
+buffered before going back to `read()`. Each frame's reply is appended to one
+`outbuf` string, and the whole batch is written with a single `write_all` after
+the drain.
+
+**Why.** A pipelined client sends many commands in one TCP segment, so one
+`read()` surfaces all of them. Writing a reply per command meant one `write()`
+syscall each — 16 syscalls for a `-P 16` batch. Collecting the replies and
+writing once cut that to a single syscall per batch and roughly _doubled_
+pipelined throughput (~120k → ~225k ops/sec at depth 16, past 400k at higher
+depths). It pairs with §16: `TCP_NODELAY` stops the kernel from stalling the
+write, and batching stops us from making sixteen of them. Serial (`-P 1`) traffic
+is unaffected — one command per read is still one write.
+
+**Tradeoff.** Replies for a batch are held until the whole batch is drained, so
+if a command mid-pipeline blocks (a `BLPOP` with no data), the replies queued
+before it wait for it to unblock. Pipelining a blocking command is a pathological
+mix, and the alternative — flushing before every possibly-blocking call — would
+throw away the batching win, so the buffered-until-drain behaviour is kept.

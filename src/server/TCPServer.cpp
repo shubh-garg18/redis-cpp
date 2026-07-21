@@ -17,6 +17,7 @@ Event loop (epoll/kqueue): handles 100k+ connections in one thread, but every ha
 
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <arpa/inet.h>
 #include <unistd.h>
 
@@ -69,6 +70,11 @@ void TCPServer::start(){
             std::cerr<<"accept: "<<std::strerror(errno)<<"\n";
             continue;
         }
+
+        // Disable Nagle: replies are small and request/response, so batching
+        // them behind the ACK timer just adds latency (and stalls pipelines).
+        int nodelay=1;
+        ::setsockopt(connection, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
 
         Context* ctx = context;
         Dispatcher* disp = dispatcher;

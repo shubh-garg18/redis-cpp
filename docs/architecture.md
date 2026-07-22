@@ -47,7 +47,7 @@ the code is organised into layers.
 
 **Steps:**
 
-1. Client opens a TCP connection to `0.0.0.0:6379`.
+1. Client opens a TCP connection to `127.0.0.1:6379`.
 2. Sends a RESP-encoded array of bulk strings.
 3. `TCPServer::start()` accepts the connection and spawns a worker thread
    running `handle_client(fd, &context, dispatcher)`.
@@ -80,18 +80,19 @@ the code is organised into layers.
             │       Dispatcher  ──►  Basic/List commands       │
             └────────────────────┬─────────────────────────────┘
                                  │
-                       ┌─────────┴──────────┐
-                       ▼                    ▼
-            ┌──────────────────┐  ┌──────────────────┐
-            │    protocol/     │  │     storage/     │
-            │  RESPParser +    │  │    Database      │
-            │  encoders        │  │   (mutex map)    │
-            └──────────────────┘  └──────────────────┘
+          ┌──────────┬───────────┼───────────┬──────────┐
+          ▼          ▼           ▼           ▼          ▼
+   ┌───────────┐ ┌─────────┐ ┌────────┐ ┌────────┐ (protocol also
+   │ protocol/ │ │ storage/│ │ pubsub/│ │persist-│  used by pubsub &
+   │ RESPParser│ │ Database│ │ PubSub │ │ ence/  │  persistence for
+   │ +encoders │ │(stores) │ │registry│ │AofWriter│  RESP encoding)
+   └───────────┘ └─────────┘ └────────┘ └────────┘
 ```
 
-Dependencies flow **downward only** — `server` depends on `command`,
-`command` depends on `protocol` and `storage`. Lower layers know nothing
-about the layers above.
+Dependencies flow **downward only** — `server` depends on `command`, and
+`command` depends on `protocol`, `storage`, `pubsub`, and `persistence`.
+`pubsub` and `persistence` depend only on `protocol` (for the RESP encoders).
+Lower layers know nothing about the layers above.
 
 ---
 

@@ -84,7 +84,7 @@ static ParseResult bulkStringParser(const std::string &chunk, int offset){
     RESPMessage msg;
     if(len==-1){
         msg.type=RESPMessage::Type::NIL;
-        return successResult(msg, cursor-offset);
+        return successResult(msg, (int)(cursor-offset));
     }
 
     if((int64_t)chunk.size()<cursor+len+2) return incompleteResult();
@@ -95,7 +95,7 @@ static ParseResult bulkStringParser(const std::string &chunk, int offset){
     msg.type=RESPMessage::Type::BULK;
     msg.str=chunk.substr(cursor, len);
 
-    return successResult(msg, cursor+len+2-offset);
+    return successResult(msg, (int)(cursor+len+2-offset));
 }
 
 // Example: "*2\r\n$3\r\nfoo\r\n$3\r\nbar\r\n"
@@ -110,14 +110,14 @@ static ParseResult arrayParser(const std::string &chunk, int offset){
 
     if(len==-1){
         msg.type=RESPMessage::Type::NIL;
-        return successResult(msg, cursor-offset);
+        return successResult(msg, (int)(cursor-offset));
     }
 
     msg.type=RESPMessage::Type::ARR;
     msg.arr.reserve(len);
 
     for(int i=0;i<len;i++){
-        ParseResult child=ParseAt(chunk, cursor);
+        ParseResult child=ParseAt(chunk, (int)cursor);
         if(!child.ok){
             if(child.incomplete) return incompleteResult();
             throw std::runtime_error("RESP: array child parse failed");
@@ -126,7 +126,7 @@ static ParseResult arrayParser(const std::string &chunk, int offset){
         cursor+=child.len;
     }
 
-    return successResult(msg, cursor-offset);
+    return successResult(msg, (int)(cursor-offset));
 }
 
 static ParseResult ParseAt(const std::string &chunk, int offset){

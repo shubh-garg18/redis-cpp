@@ -143,6 +143,7 @@ static std::string handleGeoadd(Context& context, const std::vector<RESPMessage>
 
     int added = context.db->sortedSetStore.zadd(key, entries);
     context.db->touch(key);
+    context.db->recordAccess(key);
     return encodeRESPInteger(added);
 }
 
@@ -171,6 +172,7 @@ static std::string handleGeopos(Context& context, const std::vector<RESPMessage>
         out += encodeRESPBulk(lonBuf);
         out += encodeRESPBulk(latBuf);
     }
+    context.db->recordAccess(key);
     return out;
 }
 
@@ -189,6 +191,7 @@ static std::string handleGeodist(Context& context, const std::vector<RESPMessage
             return encodeRESPError("ERR unsupported unit provided. please use M, KM, FT, MI");
     }
 
+    context.db->recordAccess(key);
     auto s1 = context.db->sortedSetStore.zscore(key, args[1].str);
     auto s2 = context.db->sortedSetStore.zscore(key, args[2].str);
     if(!s1 || !s2) return encodeRESPNull();
@@ -259,6 +262,7 @@ static std::string handleGeosearch(Context& context, const std::vector<RESPMessa
         double d = haversineMeters(centerLon, centerLat, lon, lat);
         if(d <= radiusMeters) hits.push_back({d, member});
     }
+    context.db->recordAccess(key);
 
     if(asc || desc){
         std::sort(hits.begin(), hits.end());

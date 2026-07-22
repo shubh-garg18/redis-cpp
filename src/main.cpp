@@ -21,7 +21,6 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
-#include <chrono>
 
 static int parsePort(int argc, char** argv){
     int port = 6379;
@@ -72,8 +71,13 @@ int main(int argc, char** argv){
     std::string requirepass = parseStringFlag(argc, argv, "--requirepass", "");
     std::string appendonly = parseStringFlag(argc, argv, "--appendonly", "no");
     std::string appendfilename = parseStringFlag(argc, argv, "--appendfilename", "appendonly.aof");
+    std::string maxkeys = parseStringFlag(argc, argv, "--maxkeys", "0");
 
     Database db;
+    try { 
+        db.setMaxKeys((size_t)std::stoul(maxkeys)); 
+    } 
+    catch(...) {}
     PubSub pubsub;
     AuthConfig auth;
     auth.requirepass=requirepass;

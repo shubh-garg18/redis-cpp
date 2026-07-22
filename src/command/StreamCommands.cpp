@@ -86,6 +86,7 @@ static std::string handleXadd(Context& context, const std::vector<RESPMessage>& 
     if(!res.ok) return encodeRESPError(res.error);
 
     context.db->touch(key);
+    context.db->recordAccess(key);
     return encodeRESPBulk(res.id.toString());
 }
 
@@ -101,6 +102,7 @@ static std::string handleXrange(Context& context, const std::vector<RESPMessage>
 
     auto entries=context.db->streamStore.xrange(key, start, end);
 
+    context.db->recordAccess(key);
     std::string reply=encodeRESPArrayHeader(entries.size());
     for(const auto& e: entries) reply+=encodeEntry(e);
     return reply;
@@ -161,6 +163,7 @@ static std::string handleXread(Context& context, const std::vector<RESPMessage>&
 
     std::string reply=encodeRESPArrayHeader(result.size());
     for(const auto& [key, entries]: result){
+        context.db->recordAccess(key);
         size_t n=entries.size();
         if(count>0 and (size_t)count<n) n=(size_t)count;
 

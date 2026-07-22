@@ -2,6 +2,21 @@
 
 #include <unordered_set>
 
+Database::Database() {
+    // Empty list: the two sentinels point at each other.
+    lruHead.next = &lruTail;
+    lruTail.prev = &lruHead;
+}
+
+Database::~Database() {
+    LruNode* node = lruHead.next;
+    while (node != &lruTail) {
+        LruNode* next = node->next;
+        delete node;
+        node = next;
+    }
+}
+
 std::string valueTypeName(ValueType type) {
     switch (type) {
         case ValueType::String: return "string";
@@ -39,6 +54,7 @@ int Database::del(const std::vector<std::string>& keys) {
         removed = sortedSetStore.del(key) || removed;
         removed = streamStore.del(key) || removed;
         if (removed) count++;
+        forget(key);   // keep the LRU order in sync with the keyspace
     }
     return count;
 }
@@ -71,4 +87,81 @@ uint64_t Database::version(const std::string& key) {
 void Database::touch(const std::string& key) {
     std::lock_guard<std::mutex> lock(versionMutex);
     keyVersions[key]++;
+}
+
+void Database::setMaxKeys(size_t n) {
+    maxKeys = n;
+}
+
+void Database::lruUnlink(LruNode* node) {
+    node->prev->next = node->next;
+    node->next->prev = node->prev;
+}
+
+void Database::lruPushFront(LruNode* node) {
+    node->prev = &lruHead;
+    node->next = lruHead.next;
+    lruHead.next->prev = node;
+    lruHead.next = node;
+}
+
+void Database::recordAccess(const std::string& key) {
+    if (maxKeys == 0) return;                       // eviction disabled: don't track
+
+    std::vector<std::string> evicted;
+    {
+        std::lock_guard<std::mutex> lock(lruMutex);
+
+        // Re-check existence under the lock. Between the caller's read/write and
+        // here another thread may have deleted the key; inserting a node for a
+        // gone key would leave a phantom at the front that never ages out. If the
+        // key is gone, drop any stale node we still hold and stop.
+        if (typeOf(key) == ValueType::None) {
+            auto gone = lruPos.find(key);
+            if (gone != lruPos.end()) {
+                lruUnlink(gone->second);
+                delete gone->second;
+                lruPos.erase(gone);
+            }
+            return;
+        }
+
+        auto it = lruPos.find(key);
+        if (it != lruPos.end()) {
+            lruUnlink(it->second);      // seen before: move it back to newest
+            lruPushFront(it->second);
+        } else {
+            LruNode* node = new LruNode{key, nullptr, nullptr};
+            lruPushFront(node);
+            lruPos[key] = node;
+        }
+
+        // Over the cap: drop oldest keys (just before the tail sentinel).
+        while (lruPos.size() > maxKeys) {
+            LruNode* oldest = lruTail.prev;
+            if (oldest == &lruHead) break;   // list already empty
+            evicted.push_back(oldest->key);
+            lruUnlink(oldest);
+            lruPos.erase(oldest->key);
+            delete oldest;
+        }
+    }
+
+    // Delete the evicted keys from the stores outside lruMutex, so the lock
+    // order is always lru -> store and never the reverse.
+    for (const auto& k : evicted) {
+        del({k});
+        touch(k);   // bump version so a WATCH on an evicted key aborts
+    }
+}
+
+void Database::forget(const std::string& key) {
+    if (maxKeys == 0) return;
+    std::lock_guard<std::mutex> lock(lruMutex);
+    auto it = lruPos.find(key);
+    if (it != lruPos.end()) {
+        lruUnlink(it->second);
+        delete it->second;
+        lruPos.erase(it);
+    }
 }

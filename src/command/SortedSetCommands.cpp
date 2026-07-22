@@ -32,6 +32,7 @@ static std::string handleZadd(Context& context, const std::vector<RESPMessage>& 
 
     int count=context.db->sortedSetStore.zadd(key, entries);
     context.db->touch(key);
+    context.db->recordAccess(key);
     return encodeRESPInteger(count);
 }
 
@@ -42,6 +43,7 @@ static std::string handleZrank(Context& context, const std::vector<RESPMessage>&
     if(context.db->hasWrongType(key, ValueType::SortedSet)) return wrongTypeError();
 
     auto rank=context.db->sortedSetStore.zrank(key, args[1].str);
+    context.db->recordAccess(key);
     if(!rank) return encodeRESPNull();
     return encodeRESPInteger(*rank);
 }
@@ -64,6 +66,7 @@ static std::string handleZrange(Context& context, const std::vector<RESPMessage>
     }
     
     auto items=context.db->sortedSetStore.zrange(key, start, end);
+    context.db->recordAccess(key);
     return encodeRESPArray(items);
 }
 
@@ -74,7 +77,9 @@ static std::string handleZcard(Context& context, const std::vector<RESPMessage>&
     const std::string& key=args[0].str;
     if(context.db->hasWrongType(key, ValueType::SortedSet)) return wrongTypeError();
 
-    return encodeRESPInteger(context.db->sortedSetStore.zcard(key));
+    auto n = context.db->sortedSetStore.zcard(key);
+    context.db->recordAccess(key);
+    return encodeRESPInteger(n);
 }
 
 static std::string handleZscore(Context& context, const std::vector<RESPMessage>& args){
@@ -84,6 +89,7 @@ static std::string handleZscore(Context& context, const std::vector<RESPMessage>
     if(context.db->hasWrongType(key, ValueType::SortedSet)) return wrongTypeError();
 
     auto score=context.db->sortedSetStore.zscore(key, args[1].str);
+    context.db->recordAccess(key);
     if(!score) return encodeRESPNull();
     char buf[64];
     std::snprintf(buf, sizeof(buf), "%.17g", *score);
@@ -101,6 +107,7 @@ static std::string handleZrem(Context& context, const std::vector<RESPMessage>& 
     
     int count=context.db->sortedSetStore.zrem(key, members);
     if(count) context.db->touch(key);
+    context.db->recordAccess(key);
     return encodeRESPInteger(count);
 }
 

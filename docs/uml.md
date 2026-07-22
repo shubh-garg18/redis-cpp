@@ -58,12 +58,26 @@ classDiagram
         +StreamStore streamStore
         -mutex versionMutex
         -unordered_map~string, uint64~ keyVersions
+        -mutex lruMutex
+        -unordered_map~string, LruNode*~ lruPos
+        -LruNode lruHead
+        -LruNode lruTail
+        -size_t maxKeys
         +del(keys) int
         +typeOf(key) ValueType
         +keys(pattern) vector~string~
         +hasWrongType(key, expected) bool
         +version(key) uint64
         +touch(key) void
+        +recordAccess(key) void
+        +forget(key) void
+        +setMaxKeys(n) void
+    }
+
+    class LruNode {
+        +string key
+        +LruNode* prev
+        +LruNode* next
     }
 
     class StringStore {
@@ -185,6 +199,7 @@ classDiagram
     Database *-- ListStore
     Database *-- SortedSetStore
     Database *-- StreamStore
+    Database *-- LruNode : recency order
 
     StreamStore *-- StreamEntry
     StreamEntry *-- StreamID

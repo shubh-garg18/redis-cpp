@@ -157,6 +157,19 @@ assert "AOF replayed string"  "yes"  "$(rc GET durable)"
 assert "AOF replayed list"    "2"    "$(rc LLEN dlist)"
 stop_server
 
+# ---------------------------------------------------------------- lru eviction
+echo "== lru eviction (--maxkeys 3) =="
+start_server --maxkeys 3
+wait_ready
+rc SET e1 1 >/dev/null; rc SET e2 1 >/dev/null; rc SET e3 1 >/dev/null
+rc GET e1 >/dev/null                # refresh e1 so e2 becomes oldest
+rc SET e4 1 >/dev/null              # 4th key -> evict oldest (e2)
+assert "refreshed key survives"    "1"  "$(rc GET e1)"
+assert "oldest key evicted"        ""   "$(rc GET e2)"
+assert "newest key present"        "1"  "$(rc GET e4)"
+assert "count stays at cap"        "3"  "$(rc KEYS '*' | grep -c .)"
+stop_server
+
 # ---------------------------------------------------------------- summary
 echo
 echo "-----------------------------------------"

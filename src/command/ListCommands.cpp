@@ -21,6 +21,7 @@ static std::string handleRpush(Context& context, const std::vector<RESPMessage>&
     
     int count=context.db->listStore.rpush(key, values);
     context.db->touch(key);
+    context.db->recordAccess(key);
     return encodeRESPInteger(count);
 }
 
@@ -35,6 +36,7 @@ static std::string handleLpush(Context& context, const std::vector<RESPMessage>&
     
     int count=context.db->listStore.lpush(key, values);
     context.db->touch(key);
+    context.db->recordAccess(key);
     return encodeRESPInteger(count);
 }
 
@@ -57,6 +59,7 @@ static std::string handleLrange(Context& context, const std::vector<RESPMessage>
     
     auto items=context.db->listStore.lrange(key, start, end);
 
+    context.db->recordAccess(key);
     return encodeRESPArray(items);
 }
 
@@ -67,6 +70,7 @@ static std::string handleLlen(Context& context, const std::vector<RESPMessage>& 
     if(context.db->hasWrongType(key, ValueType::List)) return wrongTypeError();
 
     int size=context.db->listStore.llen(key);
+    context.db->recordAccess(key);
     return encodeRESPInteger(size);
 }
 
@@ -91,6 +95,7 @@ static std::string handleLpop(Context& context, const std::vector<RESPMessage>& 
     auto popped=context.db->listStore.lpop({key}, count);
     if(popped.empty()) return encodeRESPNull();
     context.db->touch(key);
+    context.db->recordAccess(key);
     if(args.size()==1) return encodeRESPBulk(popped[0]);
 
     return encodeRESPArray(popped);
@@ -119,6 +124,7 @@ static std::string handleBlpop(Context& context, const std::vector<RESPMessage>&
     auto popped=context.db->listStore.blpop(keys, timeout);
     if(!popped) return "*-1\r\n";
     context.db->touch(popped->first);
+    context.db->recordAccess(popped->first);
     return encodeRESPArray({popped->first, popped->second});
 }
 

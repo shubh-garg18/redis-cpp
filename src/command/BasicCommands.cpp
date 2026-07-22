@@ -36,6 +36,7 @@ static std::string handleSet(Context& context, const std::vector<RESPMessage>& a
     context.db->clearKey(key);
     context.db->stringStore.set(key, value, expiry);
     context.db->touch(key);
+    context.db->recordAccess(key);
     return encodeRESPSimple("OK");
 }
 
@@ -46,6 +47,7 @@ static std::string handleGet(Context& context, const std::vector<RESPMessage>& a
 
     auto val=context.db->stringStore.get(args[0].str);
     if(!val) return encodeRESPNull();
+    context.db->recordAccess(args[0].str);
     return encodeRESPBulk(*val);
 }
 
@@ -69,6 +71,7 @@ static std::string handleIncr(Context& context, const std::vector<RESPMessage>& 
     try {
         int64_t val = context.db->stringStore.incr(args[0].str);
         context.db->touch(args[0].str);
+        context.db->recordAccess(args[0].str);
         return encodeRESPInteger(val);
     } catch (const std::exception&) {
         return encodeRESPError("ERR value is not an integer or out of range");

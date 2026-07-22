@@ -82,6 +82,9 @@ fan-out) are in [docs/uml.md](docs/uml.md).
 - **Persistence** — optional append-only file (`--appendonly yes`): every write is
   journaled as it runs and replayed at startup, with non-deterministic commands
   (`XADD *`, `BLPOP`, relative `PX` expiry) rewritten to their concrete effect.
+- **Eviction** — optional `--maxkeys N` cap with exact LRU: a hand-rolled
+  doubly-linked list tracks recency across every key type and evicts the
+  least-recently-used key once the cap is passed.
 - **Concurrency** — one thread per connection; each typed store guards its own
   data with a `std::mutex`, and blocking commands wait on a `condition_variable`.
 
@@ -122,6 +125,7 @@ The server listens on port `6379` by default:
 ./redis_server
 ./redis_server --port 6380 --dir /tmp/redis-data --dbfilename dump.rdb
 ./redis_server --dir /tmp/redis-data --appendonly yes   # persist to an AOF
+./redis_server --maxkeys 100000                         # LRU-evict beyond 100k keys
 ```
 
 A quick smoke test without any client installed:
@@ -218,7 +222,7 @@ higher depths:
 Two changes unlock the pipelined numbers: `TCP_NODELAY` per connection (else
 Nagle's algorithm stalls the batched replies) and coalescing a drained batch's
 replies into a single `write()` instead of one per command. See
-[design-decisions](docs/design-decisions.md) §16–17 for methodology and caveats.
+[design-decisions](docs/design-decisions.md) §16 for methodology and caveats.
 
 ---
 

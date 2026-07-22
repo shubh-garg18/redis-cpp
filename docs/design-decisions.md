@@ -79,7 +79,7 @@ the writer side (`RPUSH`, `XADD`) calls `notify_all` after releasing the lock.
 
 **Why.** This falls straight out of decision §1 — with a thread per client, the
 natural way to wait is to actually sleep the thread. The `condition_variable`
-predicate re-checks the data each wakeup, so spurious wakeups are harmless.
+predicate re-checks the data each wakeup, so spurious wakeup are harmless.
 
 **Tradeoff.** A blocked client holds a whole thread hostage for the duration.
 Under the event-loop model this would be a parked continuation costing almost
@@ -169,15 +169,15 @@ head traffic.
 
 ---
 
-## 11. In-memory only, strict warnings
+## 11. Strict compiler warnings
 
-There is no persistence yet — the dataset lives entirely in RAM and is lost on
-restart (RDB/AOF are on the roadmap). The whole project compiles under
-`-Wall -Wextra -Wshadow -Wconversion -Wpedantic`.
+The whole project compiles under
+`-Wall -Wextra -Wshadow -Wconversion -Wpedantic`, and the build is kept clean.
 
-**Why.** Persistence is a large subsystem best added deliberately rather than
-half-built. The strict warning set catches narrowing conversions and shadowing
-early, which matters most in the byte-twiddling protocol and ID-parsing code.
+**Why.** The strict warning set catches narrowing conversions and shadowing
+early, which matters most in the byte-twiddling protocol and ID-parsing code
+where an implicit `int64_t`→`int` truncation would be a silent bug. Data is
+in-memory by default; durability is opt-in through the AOF (see §14).
 
 ---
 
@@ -293,42 +293,30 @@ tradeoff made visible, not a thing to tune away.
 
 ---
 
-## 16. `TCP_NODELAY` on every connection
+## 16. Pipelining throughput: `TCP_NODELAY` and batched writes
 
-Each accepted socket has `TCP_NODELAY` set, disabling Nagle's algorithm.
+Two changes, discovered by benchmarking rather than a priori, are what make
+pipelining fast. Serial throughput (`-P 1`) was ~16k ops/sec; turning on
+pipelining (`redis-benchmark -P 8`) at first made it _worse_ — ~4k — the
+opposite of what pipelining should do. Fixing that took both of these together,
+and pipelined throughput climbed to ~225k ops/sec at depth 16, past 400k higher.
 
-**Why.** This surfaced from benchmarking, not a priori. Serial throughput
-(`-P 1`) was ~15k ops/sec; turning on pipelining (`redis-benchmark -P 8`) made
-it _worse_ — ~4k — the opposite of what pipelining should do. The cause is the
-classic Nagle + delayed-ACK interaction: a pipeline makes the server emit
-several small replies back-to-back, and Nagle holds each one waiting for the
-previous segment's ACK, which the client delays. Setting `TCP_NODELAY` flushes
-replies immediately; pipelined throughput then jumps to ~120k ops/sec at depth
-16 and ~200k at depth 32 — a >30× swing from a one-line `setsockopt`. It's also
-exactly what real Redis does, and for the same reason.
+**`TCP_NODELAY` on every socket.** The ~4k regression was the classic Nagle +
+delayed-ACK interaction: a pipeline makes the server emit several small replies
+back-to-back, and Nagle holds each one waiting for the previous segment's ACK,
+which the client delays. Setting `TCP_NODELAY` on each accepted socket flushes
+replies immediately; pipelined throughput jumped to ~120k at depth 16 from a
+one-line `setsockopt`. It's exactly what real Redis does, and for the same
+reason. The trade is deliberate: Nagle exists to coalesce tiny packets, so
+disabling it sends a burst of small replies as more, smaller TCP segments — the
+right call for a latency-dominated request/response cache, but not a free win.
 
-**Tradeoff.** Nagle exists to coalesce tiny packets into fewer, fuller
-segments; disabling it means a burst of small replies goes out as more, smaller
-TCP segments. For a request/response cache where latency dominates that's the
-right call — the serialization already batches within a single `write` where it
-can — but it's a deliberate bandwidth-for-latency trade, not a free win.
-
----
-
-## 17. One `write()` per drained batch, not per command
-
-The connection loop reads bytes, then drains _every_ complete frame already
-buffered before going back to `read()`. Each frame's reply is appended to one
-`outbuf` string, and the whole batch is written with a single `write_all` after
-the drain.
-
-**Why.** A pipelined client sends many commands in one TCP segment, so one
-`read()` surfaces all of them. Writing a reply per command meant one `write()`
-syscall each — 16 syscalls for a `-P 16` batch. Collecting the replies and
-writing once cut that to a single syscall per batch and roughly _doubled_
-pipelined throughput (~120k → ~225k ops/sec at depth 16, past 400k at higher
-depths). It pairs with §16: `TCP_NODELAY` stops the kernel from stalling the
-write, and batching stops us from making sixteen of them. Serial (`-P 1`) traffic
+**One `write()` per drained batch.** The connection loop reads bytes, then
+drains _every_ complete frame already buffered before going back to `read()`.
+Once `TCP_NODELAY` was on, the next cost was syscalls: writing a reply per
+command meant 16 `write()`s for a `-P 16` batch. Appending each frame's reply to
+one `outbuf` and writing the whole batch once cut that to a single syscall and
+roughly _doubled_ throughput again (~120k → ~225k at depth 16). Serial traffic
 is unaffected — one command per read is still one write.
 
 **Tradeoff.** Replies for a batch are held until the whole batch is drained, so
@@ -336,3 +324,43 @@ if a command mid-pipeline blocks (a `BLPOP` with no data), the replies queued
 before it wait for it to unblock. Pipelining a blocking command is a pathological
 mix, and the alternative — flushing before every possibly-blocking call — would
 throw away the batching win, so the buffered-until-drain behaviour is kept.
+
+---
+
+## 17. LRU eviction: a hand-rolled list above the typed stores
+
+With `--maxkeys N`, the keyspace is capped at `N` keys; once it's exceeded, the
+least-recently-used key is evicted. The recency order is a **hand-written
+doubly-linked list** (a `LruNode` struct with `prev`/`next` and two sentinels),
+paired with a `key -> LruNode*` map for O(1) lookup. Every command that touches a
+key calls `Database::recordAccess`, which splices that key to the front in O(1);
+when the map outgrows the cap, nodes are dropped from the tail. It lives in
+`Database`, above the typed stores, because a key can be any type and eviction
+has to reach across all of them.
+
+**Why a raw list, not `std::list`.** Partly to show the structure honestly — this
+is the classic map + doubly-linked-list LRU — and partly because raw `LruNode*`
+in the map stay valid across rehashes, which `std::list` iterators also do but
+without making the pointer surgery visible. Access is O(1) whether it's a hit
+(splice) or an insert, and eviction is O(1) from the tail.
+
+**Concurrency.** Recency is guarded by its own mutex. `recordAccess` re-checks
+the key still exists (`typeOf`) _under_ that lock before inserting a node —
+otherwise a key deleted between the caller's read and here would get a fresh
+node spliced to the _front_, a phantom that never ages out. Eviction _collects_
+victim keys under the lock, releases it, and only then deletes them from the
+stores. So the lock order is always recency → store (the `typeOf` probe nests in
+that same direction, and deletion never holds a store lock while taking the
+recency one), and there's no deadlock with the per-store mutexes. An evicted key
+is `touch`ed so a `WATCH` on it aborts the transaction, exactly like a `DEL`.
+
+**Tradeoffs.** True LRU (reads refresh recency, not just writes), so a hot
+read-only key never ages out — at the cost of a `recordAccess` call, including a
+`typeOf` probe, on read paths too. The cap is a **key count**, not a byte
+budget: simple and exact, but it doesn't bound memory when values differ wildly
+in size (real Redis uses `maxmemory` with sampled-LRU approximation; this is
+exact LRU with a count). Under this cap the order is exact per operation; the one
+soft edge is that a key deleted concurrently with its _own_ eviction can briefly
+re-appear as a stale node, harmlessly reclaimed on a later eviction (its delete
+is then a no-op) — so LRU stays exact in the common case and is only approximate
+under that specific race.

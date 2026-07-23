@@ -12,6 +12,7 @@ struct ClientState;
 class PubSub;
 struct AuthConfig;
 class AofWriter;
+class ReplState;
 
 struct Context{
     Database* db;
@@ -21,6 +22,7 @@ struct Context{
     PubSub* pubsub = nullptr;
     AuthConfig* auth = nullptr;
     AofWriter* aof = nullptr;
+    ReplState* repl = nullptr;
 };
 
 using CommandHandler=

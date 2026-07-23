@@ -1,5 +1,8 @@
 #include "storage/Database.hpp"
 
+#include <cstdint>
+#include <cstdio>
+#include <tuple>
 #include <unordered_set>
 
 Database::Database() {
@@ -76,6 +79,48 @@ std::vector<std::string> Database::keys(const std::string& pattern) {
     add_matches(sortedSetStore.keys());
     add_matches(streamStore.keys());
     return matched;
+}
+
+std::vector<std::vector<std::string>> Database::dumpAsCommands() {
+    std::vector<std::vector<std::string>> cmds;
+
+    for (const auto& [k, v, expiry] : stringStore.dump()) {
+        if (expiry > 0) cmds.push_back({"SET", k, v, "PXAT", std::to_string(expiry)});
+        else cmds.push_back({"SET", k, v});
+    }
+
+    for (const auto& k : listStore.keys()) {
+        auto items = listStore.lrange(k, 0, -1);
+        if (items.empty()) continue;
+        std::vector<std::string> cmd{"RPUSH", k};
+        for (const auto& item : items) cmd.push_back(item);
+        cmds.push_back(std::move(cmd));
+    }
+
+    for (const auto& k : sortedSetStore.keys()) {
+        auto members = sortedSetStore.zrange(k, 0, -1);
+        std::vector<std::string> cmd{"ZADD", k};
+        for (const auto& m : members) {
+            auto score = sortedSetStore.zscore(k, m);
+            if (!score) continue;
+            char buf[64];
+            std::snprintf(buf, sizeof(buf), "%.17g", *score);
+            cmd.push_back(buf);
+            cmd.push_back(m);
+        }
+        if (cmd.size() > 2) cmds.push_back(std::move(cmd));
+    }
+
+    for (const auto& k : streamStore.keys()) {
+        auto entries = streamStore.xrange(k, {0, 0}, {UINT64_MAX, UINT64_MAX});
+        for (const auto& e : entries) {
+            std::vector<std::string> cmd{"XADD", k, e.id.toString()};
+            for (const auto& f : e.fields) cmd.push_back(f);
+            cmds.push_back(std::move(cmd));
+        }
+    }
+
+    return cmds;
 }
 
 uint64_t Database::version(const std::string& key) {

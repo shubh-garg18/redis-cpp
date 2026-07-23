@@ -15,8 +15,8 @@ throughput.
 
 > **Status:** string/key, list, sorted-set, stream, geospatial, and pub/sub
 > commands working over TCP, plus `MULTI`/`EXEC` transactions with optimistic
-> `WATCH` locking, optional password authentication, and AOF persistence.
-> Multi-threaded server, one thread per client.
+> `WATCH` locking, optional password authentication, AOF persistence, and
+> master-replica replication. Multi-threaded server, one thread per client.
 
 ---
 
@@ -85,6 +85,9 @@ fan-out) are in [docs/uml.md](docs/uml.md).
 - **Eviction** — optional `--maxkeys N` cap with exact LRU: a hand-rolled
   doubly-linked list tracks recency across every key type and evicts the
   least-recently-used key once the cap is passed.
+- **Replication** — `--replicaof <host> <port>` makes a server a read-only
+  replica: it syncs the master's dataset as a command snapshot, then applies the
+  master's live write stream. `INFO replication` reports role and replica count.
 - **Concurrency** — one thread per connection; each typed store guards its own
   data with a `std::mutex`, and blocking commands wait on a `condition_variable`.
 
@@ -126,6 +129,7 @@ The server listens on port `6379` by default:
 ./redis_server --port 6380 --dir /tmp/redis-data --dbfilename dump.rdb
 ./redis_server --dir /tmp/redis-data --appendonly yes   # persist to an AOF
 ./redis_server --maxkeys 100000                         # LRU-evict beyond 100k keys
+./redis_server --port 6380 --replicaof 127.0.0.1 6379   # run as a replica of :6379
 ```
 
 A quick smoke test without any client installed:

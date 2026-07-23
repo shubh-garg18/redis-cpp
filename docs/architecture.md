@@ -80,19 +80,22 @@ the code is organised into layers.
             │       Dispatcher  ──►  Basic/List commands       │
             └────────────────────┬─────────────────────────────┘
                                  │
-          ┌──────────┬───────────┼───────────┬──────────┐
-          ▼          ▼           ▼           ▼          ▼
-   ┌───────────┐ ┌─────────┐ ┌────────┐ ┌────────┐ (protocol also
-   │ protocol/ │ │ storage/│ │ pubsub/│ │persist-│  used by pubsub &
-   │ RESPParser│ │ Database│ │ PubSub │ │ ence/  │  persistence for
-   │ +encoders │ │(stores) │ │registry│ │AofWriter│  RESP encoding)
-   └───────────┘ └─────────┘ └────────┘ └────────┘
+        ┌──────────┬──────────┬──────────┬───────────┬────────┐
+        ▼          ▼          ▼          ▼           ▼        ▼
+  ┌──────────┐┌─────────┐┌────────┐┌───────────┐┌─────────┐
+  │ protocol/││ storage/││ pubsub/││persistence/││  repl/  │
+  │RESPParser││ Database││ PubSub ││ AofWriter ││ ReplState│
+  │+encoders ││ (stores)││registry││  (journal)││ (replicas)│
+  └──────────┘└─────────┘└────────┘└───────────┘└─────────┘
+  (protocol is also used by pubsub, persistence & repl for RESP encoding)
 ```
 
 Dependencies flow **downward only** — `server` depends on `command`, and
-`command` depends on `protocol`, `storage`, `pubsub`, and `persistence`.
-`pubsub` and `persistence` depend only on `protocol` (for the RESP encoders).
-Lower layers know nothing about the layers above.
+`command` depends on `protocol`, `storage`, `pubsub`, `persistence`, and `repl`.
+`pubsub` and `persistence` depend only on `protocol`; `repl` (the replica
+registry) depends only on the `ClientState` header, so it stays free of
+`command` — the outbound replica connector, which needs the dispatcher, lives in
+`server` (`ReplicaLink`) instead. Lower layers know nothing about those above.
 
 ---
 
@@ -252,6 +255,9 @@ Other reply types:
 | `PUBSUB CHANNELS` / `PUBSUB NUMSUB ch ...`                   | ≥1          | active channels / flat `[ch, count, ...]` array   |
 | `AUTH [user] password`                                       | 1-2         | `+OK` or `WRONGPASS` / `NOAUTH` error             |
 | `ACL WHOAMI`                                                 | 1           | bulk `default`                                    |
+| `REPLCONF ...`                                               | ≥1          | `+OK` (handshake); `ACK` swallowed                |
+| `PSYNC ? -1`                                                 | 2           | `+FULLRESYNC` + command snapshot                  |
+| `INFO [section]`                                             | 0-1         | bulk `# Replication` block                        |
 
 Dispatch is **case-insensitive** — both `PING` and `ping` route to `handlePing`.
 
@@ -339,6 +345,7 @@ include/
 │   ├── GeoCommands.hpp       # registerGeoCommands(Dispatcher&)
 │   ├── PubSubCommands.hpp    # registerPubSubCommands(Dispatcher&)
 │   ├── AuthCommands.hpp      # registerAuthCommands(Dispatcher&)
+│   ├── ReplCommands.hpp      # registerReplCommands(Dispatcher&)
 │   └── CommandDispatcher.hpp # Context, Dispatcher, toUpper()
 ├── auth/
 │   └── AuthConfig.hpp        # server-wide requirepass (header-only)
@@ -349,9 +356,12 @@ include/
 │   └── AofWriter.hpp         # append-only file writer (thread-safe)
 ├── pubsub/
 │   └── PubSub.hpp            # channel → subscribers registry
+├── repl/
+│   └── ReplState.hpp         # replica registry + role/link info
 ├── server/
 │   ├── ClientSession.hpp     # handle_client(fd, ctx, disp)
 │   ├── ClientState.hpp       # per-connection fd + writeMutex + channels + auth
+│   ├── ReplicaLink.hpp       # connectToMaster(...) outbound sync
 │   ├── TransactionManager.hpp# per-conn MULTI/EXEC/WATCH state
 │   └── TCPServer.hpp         # TCPServer(port, ctx, disp)
 └── storage/
@@ -364,11 +374,13 @@ include/
 src/
 ├── command/   { BasicCommands.cpp, ListCommands.cpp, SortedSetCommands.cpp,
 │                StreamCommands.cpp, GeoCommands.cpp, PubSubCommands.cpp,
-│                AuthCommands.cpp, CommandDispatcher.cpp }
+│                AuthCommands.cpp, ReplCommands.cpp, CommandDispatcher.cpp }
 ├── persistence/ { AofWriter.cpp }
 ├── protocol/  { RESPParser.cpp }
 ├── pubsub/    { PubSub.cpp }
-├── server/    { ClientSession.cpp, TCPServer.cpp, TransactionManager.cpp }
+├── repl/      { ReplState.cpp }
+├── server/    { ClientSession.cpp, TCPServer.cpp, TransactionManager.cpp,
+│                ReplicaLink.cpp }
 ├── storage/   { Database.cpp, StringStore.cpp, ListStore.cpp,
 │                SortedSetStore.cpp, StreamStore.cpp }
 └── main.cpp
@@ -541,3 +553,41 @@ than failing.
   crash / power loss.
 - Expiry uses a monotonic clock, so `PXAT` deadlines are correct across a process
   restart (the case AOF protects) but not across a machine reboot.
+
+---
+
+## 13. Replication (master → replica)
+
+`--replicaof <host> <port>` makes a server a replica. It dials the master on a
+background thread (`ReplicaLink`), runs a handshake, receives a snapshot of the
+master's current data, then applies every write the master streams afterward.
+Reads work on either side; a replica rejects direct client writes with
+`-READONLY`. `INFO replication` reports the role and connected replica count.
+
+The **initial sync is a command snapshot, not an RDB blob**: the master
+serializes its whole keyspace as RESP write commands (`SET`/`RPUSH`/`ZADD`/
+`XADD`, the same shape the AOF produces) and the replica runs them through its
+own dispatcher. Live writes then stream on top through the same `canonicalWrite`
+hook the AOF uses — one rewrite, two sinks. (See design-decisions §18 for the
+RDB-vs-command-snapshot tradeoff and the honest omissions.)
+
+```text
+Replica                                   Master
+  │  PING                    ───────────►  +PONG
+  │  REPLCONF listening-port ───────────►  +OK
+  │  REPLCONF capa psync2    ───────────►  +OK
+  │  PSYNC ? -1              ───────────►  +FULLRESYNC <replid> 0
+  │                          ◄───────────  SET k v / RPUSH … / …   (snapshot)
+  │                                        ReplState.syncReplica(): snapshot
+  │                                        + register — under one lock
+  │                          ◄───────────  SET live v2             (live writes)
+  ▼  apply each via dispatcher (client == null, so the READONLY gate passes)
+```
+
+The replica registry (`ReplState`) mirrors `PubSub`: a mutex-guarded set of
+replica `ClientState*`, with `propagate()` fanning each live write out and a
+`Teardown` hook dropping a replica on disconnect. `syncReplica` builds the
+snapshot and registers the replica under the same lock, so no write is lost in
+the gap between them. The read-only gate keys on `ctx.client == nullptr` — master
+and AOF-replay applies have no client and pass; real clients don't and are
+blocked (even inside `MULTI`).

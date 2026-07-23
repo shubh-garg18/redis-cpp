@@ -61,6 +61,13 @@ target_include_directories(persistence PUBLIC include)
 target_link_libraries(persistence PUBLIC Threads::Threads)
 target_compile_options(persistence PRIVATE ${WARNING_FLAGS})
 
+add_library(repl
+    src/repl/ReplState.cpp
+)
+target_include_directories(repl PUBLIC include)
+target_link_libraries(repl PUBLIC Threads::Threads)
+target_compile_options(repl PRIVATE ${WARNING_FLAGS})
+
 add_library(command
     src/command/CommandDispatcher.cpp
     src/command/BasicCommands.cpp
@@ -70,18 +77,20 @@ add_library(command
     src/command/GeoCommands.cpp
     src/command/PubSubCommands.cpp
     src/command/AuthCommands.cpp
+    src/command/ReplCommands.cpp
 )
 target_include_directories(command PUBLIC include)
-target_link_libraries(command PUBLIC protocol storage pubsub persistence)
+target_link_libraries(command PUBLIC protocol storage pubsub persistence repl)
 target_compile_options(command PRIVATE ${WARNING_FLAGS})
 
 add_library(server
     src/server/ClientSession.cpp
     src/server/TCPServer.cpp
     src/server/TransactionManager.cpp
+    src/server/ReplicaLink.cpp
 )
 target_include_directories(server PUBLIC include)
-target_link_libraries(server PUBLIC command protocol Threads::Threads)
+target_link_libraries(server PUBLIC command protocol repl Threads::Threads)
 target_compile_options(server PRIVATE ${WARNING_FLAGS})
 
 # ============================
@@ -93,7 +102,7 @@ add_executable(redis_server
 
 target_include_directories(redis_server PRIVATE include)
 target_compile_options(redis_server PRIVATE ${WARNING_FLAGS})
-target_link_libraries(redis_server PRIVATE protocol storage command pubsub persistence server Threads::Threads)
+target_link_libraries(redis_server PRIVATE protocol storage command pubsub persistence repl server Threads::Threads)
 
 # ============================
 # Build Type Flags

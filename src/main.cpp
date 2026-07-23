@@ -7,19 +7,24 @@
 #include "command/GeoCommands.hpp"
 #include "command/PubSubCommands.hpp"
 #include "command/AuthCommands.hpp"
+#include "command/ReplCommands.hpp"
 #include "pubsub/PubSub.hpp"
 #include "auth/AuthConfig.hpp"
 #include "persistence/AofWriter.hpp"
+#include "repl/ReplState.hpp"
 #include "protocol/RESPParser.hpp"
 #include "server/TCPServer.hpp"
+#include "server/ReplicaLink.hpp"
 
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <iostream>
 #include <iterator>
+#include <random>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
 
 static int parsePort(int argc, char** argv){
@@ -38,6 +43,16 @@ static std::string parseStringFlag(int argc, char** argv, const char* flag, cons
         if(std::strcmp(argv[i], flag) == 0) return argv[i+1];
     }
     return fallback;
+}
+
+// 40 random hex chars, like a real Redis run id (identifies this master).
+static std::string randomReplId(){
+    static const char* hex="0123456789abcdef";
+    std::random_device rd;
+    std::mt19937_64 rng(rd());
+    std::string id;
+    for(int i=0; i<40; i++) id+=hex[rng()%16];
+    return id;
 }
 
 // Replay the append-only file through the dispatcher. ctx.aof is still null
@@ -73,6 +88,19 @@ int main(int argc, char** argv){
     std::string appendfilename = parseStringFlag(argc, argv, "--appendfilename", "appendonly.aof");
     std::string maxkeys = parseStringFlag(argc, argv, "--maxkeys", "0");
 
+    // --replicaof <host> <port> takes two tokens, which parseStringFlag can't do.
+    std::string masterHost;
+    int masterPort = 0;
+    bool isReplica = false;
+    for(int i=1; i+2<argc; i++){
+        if(std::strcmp(argv[i], "--replicaof") == 0){
+            masterHost = argv[i+1];
+            masterPort = std::atoi(argv[i+2]);
+            isReplica = true;
+            break;
+        }
+    }
+
     Database db;
     try { 
         db.setMaxKeys((size_t)std::stoul(maxkeys)); 
@@ -82,9 +110,17 @@ int main(int argc, char** argv){
     AuthConfig auth;
     auth.requirepass=requirepass;
     AofWriter aof;
+    ReplState repl;
+    repl.replid=randomReplId();
+    if(isReplica){
+        repl.role=ReplState::Role::REPLICA;
+        repl.masterHost=masterHost;
+        repl.masterPort=masterPort;
+    }
     Context ctx{&db, dir, dbfilename};
     ctx.pubsub=&pubsub;
     ctx.auth=&auth;
+    ctx.repl=&repl;
 
     Dispatcher dispatcher;
     registerBasicCommands(dispatcher);
@@ -94,6 +130,7 @@ int main(int argc, char** argv){
     registerGeoCommands(dispatcher);
     registerPubSubCommands(dispatcher);
     registerAuthCommands(dispatcher);
+    registerReplCommands(dispatcher);
 
     // AOF is the source of truth when enabled: replay it (with ctx.aof still
     // null so nothing is re-appended), then keep it open for live appends.
@@ -107,12 +144,20 @@ int main(int argc, char** argv){
         ctx.aof=&aof;
     }
 
+    // As a replica, dial the master on a background thread; it syncs then streams.
+    if(isReplica){
+        std::thread(connectToMaster, masterHost, masterPort, port,
+                    std::ref(dispatcher), std::ref(ctx)).detach();
+    }
+
     try {
         TCPServer server(port, &ctx, &dispatcher);
         server.start();
     } catch(const std::exception& e){
         std::cerr<<"fatal: "<<e.what()<<"\n";
-        return 1;
+        // exit() rather than return: a detached replica-link thread may still
+        // hold references to main's locals, which returning would destroy.
+        std::exit(1);
     }
     return 0;
 }

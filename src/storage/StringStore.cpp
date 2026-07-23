@@ -112,6 +112,21 @@ std::vector<std::string> StringStore::keys() {
     return res;
 }
 
+std::vector<std::tuple<std::string, std::string, int64_t>> StringStore::dump() {
+    std::lock_guard<std::mutex> lock(mutex);
+    std::vector<std::tuple<std::string, std::string, int64_t>> out;
+    auto now = Date_now();
+    for (auto it = setMap.begin(); it != setMap.end(); ) {
+        if (isExpired(it->second, now)) {
+            it = setMap.erase(it);
+        } else {
+            out.push_back({it->first, it->second.value, it->second.expiry});
+            ++it;
+        }
+    }
+    return out;
+}
+
 int64_t StringStore::incr(const std::string& key) {
     std::lock_guard<std::mutex> lock(mutex);
 

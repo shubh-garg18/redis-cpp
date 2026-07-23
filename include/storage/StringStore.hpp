@@ -3,6 +3,7 @@
 #include <string>
 #include<unordered_map>
 #include<vector>
+#include<tuple>
 #include<cstdint>
 #include<mutex>
 #include<optional>
@@ -18,6 +19,10 @@ public:
 
     bool exists(const std::string& key);
     std::vector<std::string> keys();
+
+    // Live entries as (key, value, expiry) for the replication snapshot; expiry
+    // is an absolute ms deadline, 0 when the key has no TTL.
+    std::vector<std::tuple<std::string, std::string, int64_t>> dump();
 
     static int64_t Date_now();
 

@@ -42,7 +42,13 @@ wait_ready() {
     echo "server never became ready; log:"; cat "$WORK/server.log"; exit 1
 }
 
-cleanup() { stop_server; rm -rf "$WORK"; }
+RSRV_PID=""
+RWORK=""
+cleanup() {
+    stop_server
+    [ -n "$RSRV_PID" ] && { kill "$RSRV_PID" 2>/dev/null; wait "$RSRV_PID" 2>/dev/null; }
+    rm -rf "$WORK" "$RWORK"
+}
 trap cleanup EXIT INT TERM
 
 rc() { redis-cli -p "$PORT" "$@" 2>&1; }
@@ -168,6 +174,31 @@ assert "refreshed key survives"    "1"  "$(rc GET e1)"
 assert "oldest key evicted"        ""   "$(rc GET e2)"
 assert "newest key present"        "1"  "$(rc GET e4)"
 assert "count stays at cap"        "3"  "$(rc KEYS '*' | grep -c .)"
+stop_server
+
+# ---------------------------------------------------------------- replication
+echo "== replication (master + replica) =="
+RPORT=$((PORT + 1))
+RWORK="$(mktemp -d)"
+start_server                                    # master on $PORT
+wait_ready
+rc SET rep_pre v1 >/dev/null                     # preload -> exercises the snapshot
+"$BIN" --port "$RPORT" --dir "$RWORK" --replicaof 127.0.0.1 "$PORT" >"$RWORK/server.log" 2>&1 &
+RSRV_PID=$!
+for _ in $(seq 1 50); do
+    [ "$(redis-cli -p "$RPORT" PING 2>/dev/null)" = "PONG" ] && break
+    sleep 0.1
+done
+sleep 0.5                                        # let the sync land
+assert "snapshot reached replica" "v1" "$(redis-cli -p "$RPORT" GET rep_pre 2>/dev/null)"
+rc SET rep_live v2 >/dev/null
+sleep 0.3
+assert "live write propagated"    "v2" "$(redis-cli -p "$RPORT" GET rep_live 2>/dev/null)"
+assert_has "replica is read-only"  "READONLY"          "$(redis-cli -p "$RPORT" SET x 1 2>/dev/null)"
+assert_has "replica INFO role"     "role:slave"        "$(redis-cli -p "$RPORT" INFO replication 2>/dev/null | tr -d '\r')"
+assert_has "master sees replica"   "connected_slaves:1" "$(redis-cli -p "$PORT" INFO replication 2>/dev/null | tr -d '\r')"
+kill "$RSRV_PID" 2>/dev/null; wait "$RSRV_PID" 2>/dev/null; RSRV_PID=""
+rm -rf "$RWORK"; RWORK=""
 stop_server
 
 # ---------------------------------------------------------------- summary

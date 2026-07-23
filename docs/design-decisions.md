@@ -364,3 +364,54 @@ soft edge is that a key deleted concurrently with its _own_ eviction can briefly
 re-appear as a stale node, harmlessly reclaimed on a later eviction (its delete
 is then a no-op) — so LRU stays exact in the common case and is only approximate
 under that specific race.
+
+---
+
+## 18. Replication: initial sync as a command snapshot, not RDB
+
+A replica keeps a live copy of a master's dataset. It connects out, does a
+`PING`/`REPLCONF`/`PSYNC` handshake, receives the master's current data, then
+applies every subsequent write the master streams to it. `--replicaof <host>
+<port>` makes a server a replica; `INFO replication` reports roles; a replica
+rejects direct client writes with `-READONLY`.
+
+**Why a command snapshot.** Real Redis's `PSYNC` ships the initial dataset as an
+**RDB binary blob**. There is no RDB writer here, and building one purely to seed
+replication is low-value binary-format busywork. So the initial sync is instead
+a stream of **RESP write commands** — `Database::dumpAsCommands()` re-encodes the
+whole keyspace as `SET`/`RPUSH`/`ZADD`/`XADD` (the same shape the AOF produces) —
+which the replica simply runs through its normal dispatcher. Live writes then
+stream on top through the _same_ `canonicalWrite` path the AOF already uses: one
+rewrite, two sinks (journal + replicas).
+
+**Design details worth knowing.**
+
+- **Read-only via `client != nullptr`, not a flag.** Normal clients carry a
+  `ClientState`; the master link and AOF replay apply writes with `client ==
+  null`. The `READONLY` gate in `executeCommand` keys on that, and sits _before_
+  `EXEC` replay so a `MULTI` on a replica is rejected too.
+- **Snapshot built under the replica-registry lock.** `syncReplica` builds the
+  snapshot _and_ registers the replica while holding `ReplState`'s mutex, so no
+  write's `propagate()` can slip in between the snapshot point and registration —
+  every write is either captured in the snapshot or streamed live, never lost.
+
+**Tradeoffs — deliberate cuts for a learning build.**
+
+- **No interop with real Redis, either direction.** `+FULLRESYNC` is not followed
+  by an RDB payload, so only this project's own `ReplicaLink` can consume the
+  stream (and it can't sync from a real master). Correct for the learning goal.
+- **A slow replica can stall master writes.** `propagate` (and `syncReplica`)
+  write to sockets while holding the registry mutex — and every write command
+  checks `replicaCount()` under that same mutex — so one stuck replica back-
+  pressures all writes, and a large snapshot blocks propagation for its whole
+  transmission. Same tradeoff as pub/sub (§12), accepted for the same reason;
+  the alternative (writing outside the lock) reopens the freed-`ClientState`
+  race the lock closes.
+- **Residual double-apply window.** Closing the lost-write race leaves a tiny
+  window where a non-idempotent write (`RPUSH`, `INCR`) in flight exactly during
+  a `PSYNC` can land in both the snapshot and the live stream. Real Redis dedupes
+  this with replication offsets; those are omitted here (`master_repl_offset` is
+  always 0, `REPLCONF ACK` is swallowed).
+- **Omitted:** partial resync / backlog (`+CONTINUE`), `WAIT`, offset accounting,
+  and reconnect — on a link drop the replica goes stale rather than re-dialing.
+  The master address is parsed as a dotted-quad IPv4 (no hostname resolution).

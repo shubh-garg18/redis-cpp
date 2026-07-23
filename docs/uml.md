@@ -28,6 +28,7 @@ classDiagram
         +PubSub* pubsub
         +AuthConfig* auth
         +AofWriter* aof
+        +ReplState* repl
     }
 
     class Dispatcher {
@@ -151,6 +152,18 @@ classDiagram
         +isOpen() bool
         +append(resp) void
     }
+    class ReplState {
+        +Role role
+        +string replid
+        +string masterHost
+        +int masterPort
+        -mutex mutex
+        -unordered_set~ClientState*~ replicas
+        +syncReplica(c, buildSnapshot) void
+        +dropReplica(c) void
+        +propagate(frame) void
+        +replicaCount() int
+    }
 
     class BasicCommands {
         <<module>>
@@ -191,7 +204,9 @@ classDiagram
     Context --> PubSub : points to
     Context --> AuthConfig : points to
     Context --> AofWriter : points to
+    Context --> ReplState : points to
     Context ..> ClientState : current client
+    ReplState ..> ClientState : streams to replicas
     Dispatcher ..> Context : passes to handlers
     Dispatcher ..> AofWriter : journals writes
 
@@ -313,4 +328,34 @@ sequenceDiagram
     PS-->>A: [message, news, hi]
     PS-->>HB: delivered = 1
     HB-->>B: (integer) 1
+```
+
+---
+
+## 5. Sequence: replica sync via `PSYNC`
+
+The replica dials out and runs the handshake; the master replies with a command
+snapshot, then streams live writes. `syncReplica` builds the snapshot and
+registers the replica under one lock, so no write is lost in between.
+
+```mermaid
+sequenceDiagram
+    participant RL as ReplicaLink (replica)
+    participant HM as handle_client (master)
+    participant RS as ReplState (master)
+    participant W as another client (master)
+
+    RL->>HM: PING / REPLCONF x2
+    HM-->>RL: +PONG / +OK
+    RL->>HM: PSYNC ? -1
+    HM->>RS: syncReplica(client, buildSnapshot)
+    Note over RS: lock mutex →<br/>build snapshot (dumpAsCommands)<br/>write snapshot → insert replica
+    RS-->>RL: +FULLRESYNC + SET/RPUSH/ZADD…
+    Note over RL: apply each via dispatcher<br/>(client == null → READONLY passes)
+
+    W->>HM: SET live v2
+    Note over HM: canonicalWrite → propagate
+    HM->>RS: propagate(SET live v2)
+    RS-->>RL: SET live v2
+    Note over RL: replica now has live v2
 ```

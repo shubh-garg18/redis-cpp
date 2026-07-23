@@ -40,6 +40,7 @@ with a std::mutex.
 #include "server/ClientState.hpp"
 #include "server/TransactionManager.hpp"
 #include "pubsub/PubSub.hpp"
+#include "repl/ReplState.hpp"
 #include "auth/AuthConfig.hpp"
 #include "protocol/RESPParser.hpp"
 
@@ -80,11 +81,13 @@ void handle_client(int connection, Context* context, Dispatcher& dispatcher){
         int fd;
         ClientState* client;
         PubSub* pubsub;
+        ReplState* repl;
         ~Teardown(){
             if(pubsub) pubsub->dropClient(client);
+            if(repl) repl->dropReplica(client);
             ::close(fd);
         }
-    } teardown{connection, &client, ctx.pubsub};
+    } teardown{connection, &client, ctx.pubsub, ctx.repl};
 
     std::string buffer;
     char chunk[16384];

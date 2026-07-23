@@ -42,6 +42,10 @@ public:
     ValueType typeOf(const std::string& key);
     std::vector<std::string> keys(const std::string& pattern);
 
+    // Whole dataset as write-command token lists (["SET","k","v"], ...), used to
+    // seed a replica on PSYNC. The command layer encodes each as a RESP array.
+    std::vector<std::vector<std::string>> dumpAsCommands();
+
     bool hasWrongType(const std::string& key, ValueType expected);
     void clearKey(const std::string& key);
 
